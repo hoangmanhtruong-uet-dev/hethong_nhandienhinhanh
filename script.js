@@ -1,19 +1,38 @@
 // ──────────────────────────────────────────────
 //  AI Vision Pro — script.js
+//  Refactored for Phase 2: AppState, Toast, ImageProcessor, HistorySafe, CameraManager
 // ──────────────────────────────────────────────
 
-// ── State ──────────────────────────────────────
-let classifierModel = null;
-let detectorModel   = null;
-let webcamStream    = null;
-let webcamRunning   = false;
-let totalImages     = 0;
-let totalObjects    = 0;
-let analysisHistory = [];
-let liveDetecting   = false;
-let liveDetectRaf   = null;
-let lastAnalysis    = null;
-let currentMode     = 'upload';
+// ── Alias AppState (backward compat, remove Phase 3) ──
+// Generate thumbnail from canvas (alias for backward compat)
+function generateThumbnail(imgEl) {
+  const c = document.createElement('canvas');
+  c.width = 320;
+  const w = imgEl.naturalWidth || imgEl.width || 1;
+  const h = imgEl.naturalHeight || imgEl.height || 1;
+  c.height = Math.round(320 * (h / w));
+  c.getContext('2d').drawImage(imgEl, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.7);
+}
+
+// ponytail: aliases kept for features.js & live-recognize.js interop. Remove when those migrate.
+Object.defineProperties(window, {
+  classifierModel: { get: function() { return window.AppState.models.classifier.instance; }, set: function(v) { window.AppState.models.classifier.instance = v; } },
+  detectorModel:   { get: function() { return window.AppState.models.detector.instance; },   set: function(v) { window.AppState.models.detector.instance = v; } },
+  webcamStream:    { get: function() { return window.AppState.camera.stream; },               set: function(v) { window.AppState.camera.stream = v; } },
+  webcamRunning:   { get: function() { return window.AppState.camera.isRunning; },            set: function(v) { window.AppState.camera.isRunning = v; } },
+  currentMode:     { get: function() { return window.AppState.ui.activeMode; },               set: function(v) { window.AppState.ui.activeMode = v; } },
+  lastAnalysis:    { get: function() { return window.AppState.analysis.lastResult; },         set: function(v) { window.AppState.analysis.lastResult = v; } },
+  liveDetectRaf:   { get: function() { return window.AppState.camera.rafId; },                set: function(v) { window.AppState.camera.rafId = v; } },
+  liveDetecting:   { get: function() { return window.AppState.camera.isPaused; },             set: function(v) { window.AppState.camera.isPaused = v; } }
+});
+
+// Legacy globals — kept for features.js that read them directly
+var totalImages  = 0;
+var totalObjects = 0;
+var analysisHistory = [];
+var liveBusy     = false;
+
 const HISTORY_KEY        = 'ai-vision-history';
 const LABEL_FILTER_KEY   = 'ai-vision-label-filter';
 const MAX_HISTORY        = 15;
@@ -78,33 +97,12 @@ const labelFilterDropdown = document.getElementById('label-filter-dropdown');
 const labelFilterHint     = document.getElementById('label-filter-hint');
 const optDetect           = document.getElementById('opt-detect');
 
-// ── Load Models ─────────────────────────────────
-async function loadModels() {
-    const dot = document.querySelector('#model-status .pulse-dot');
-    dot.className = 'pulse-dot loading';
-    navStatusText.textContent = 'Đang tải mô hình AI…';
-    try {
-        classifierModel = await mobilenet.load({ version: 2, alpha: 1.0 });
-        try {
-            detectorModel = await cocoSsd.load({ base: 'mobilenet_v2' });
-        } catch (e) {
-            console.warn('mobilenet_v2 không khả dụng, dùng mô hình mặc định:', e);
-            detectorModel = await cocoSsd.load();
-        }
-        dot.className = 'pulse-dot success';
-        navStatusText.textContent = 'Hệ thống AI sẵn sàng';
-        statusText.textContent = 'Hệ thống sẵn sàng';
-        if (typeof setModelsReady === 'function') setModelsReady(true);
-        else if (!previewImage.hidden && previewImage.src) analyzeBtn.disabled = false;
-    } catch (err) {
-        dot.className = 'pulse-dot error';
-        navStatusText.textContent = 'Lỗi tải mô hình!';
-        if (typeof hideZoneSkeleton === 'function') hideZoneSkeleton();
-        console.error(err);
-    }
+// ── Load model-loading hooks ───────────────────
+// model-loader.js handles all state transitions.
+// script.js just listens.
+function __syncAppStateAliases() {
+  // no-op: aliases auto-sync via getters
 }
-loadModels();
-loadHistoryFromStorage();
 
 // ── Slider ──────────────────────────────────────
 confSlider.addEventListener('input', () => {
@@ -283,10 +281,11 @@ function commitLabelInput() {
 }
 
 function refreshDetectionDisplay() {
-    if (!lastAnalysis?.rawDetections) return;
+    const la = window.AppState.analysis.lastResult;
+    if (!la?.rawDetections) return;
 
-    const filtered = applyDetectionFilters(lastAnalysis.rawDetections);
-    lastAnalysis.detections = filtered;
+    const filtered = applyDetectionFilters(la.rawDetections);
+    la.detections = filtered;
 
     detTags.innerHTML = '';
     detectionsSection.hidden = true;
@@ -294,12 +293,12 @@ function refreshDetectionDisplay() {
         renderDetectionTags(filtered);
         detectionsSection.hidden = false;
     }
-    if (typeof updateResultsUI === 'function') updateResultsUI(lastAnalysis.predictions || [], filtered);
+    if (typeof updateResultsUI === 'function') updateResultsUI(la.predictions || [], filtered);
 
-    generateDescription(lastAnalysis.predictions || [], filtered);
+    generateDescription(la.predictions || [], filtered);
 
     const doBBoxes = document.getElementById('opt-bboxes').checked;
-    if (currentMode === 'upload' && !previewImage.hidden) {
+    if (window.currentMode === 'upload' && !previewImage.hidden) {
         if (doBBoxes && filtered.length) drawBoundingBoxes(previewImage, detCanvas, filtered);
         else {
             const ctx = detCanvas.getContext('2d');
@@ -397,7 +396,7 @@ function initLabelFilter() {
 
 // ── Mode Switch ─────────────────────────────────
 function switchMode(mode) {
-    currentMode = mode;
+    window.currentMode = mode;
     document.getElementById('panel-upload').hidden = mode !== 'upload';
     document.getElementById('panel-webcam').hidden = mode !== 'webcam';
     document.getElementById('tab-upload').classList.toggle('active', mode === 'upload');
@@ -408,6 +407,8 @@ function switchMode(mode) {
     if (mode !== 'webcam') {
         if (typeof stopShowRecognize === 'function') stopShowRecognize();
         else stopLiveDetection();
+        // Cleanup camera when leaving webcam
+        if (window.AppState.camera.isRunning) stopCamera();
     }
     resultsSection.hidden = true;
 }
@@ -434,14 +435,22 @@ dropZone.addEventListener('drop', (e) => {
 });
 
 function handleFile(file) {
-    if (file.size > 20 * 1024 * 1024) {
-        alert('Tệp quá lớn. Vui lòng chọn ảnh dưới 20MB.');
+    // Phase 2: validate before reading
+    const validation = validateImage(file);
+    if (!validation.valid) {
+        showToast({ type: 'error', title: 'Tệp không hợp lệ', message: validation.error, duration: 4000 });
         return;
     }
+
     const reader = new FileReader();
     reader.onload = (e) => {
         if (typeof showPreviewImage === 'function') showPreviewImage(e.target.result);
         else {
+            // Revoke old URL if any
+            var oldSrc = previewImage.src;
+            if (oldSrc && oldSrc.startsWith('blob:')) {
+                URL.revokeObjectURL(oldSrc);
+            }
             previewImage.src = e.target.result;
             previewImage.hidden = false;
             document.getElementById('upload-placeholder').hidden = true;
@@ -450,13 +459,18 @@ function handleFile(file) {
         resultsSection.hidden = true;
         const ctx = detCanvas.getContext('2d');
         ctx.clearRect(0, 0, detCanvas.width, detCanvas.height);
-        if (window.modelsReady) analyzeBtn.disabled = false;
+        // Check any model ready
+        if (window.AppState && window.AppState.anyModelReady()) analyzeBtn.disabled = false;
     };
     reader.readAsDataURL(file);
 }
 
 // ── Reset ────────────────────────────────────────
 resetBtn.addEventListener('click', () => {
+    var oldSrc = previewImage.src;
+    if (oldSrc && oldSrc.startsWith('blob:')) {
+        URL.revokeObjectURL(oldSrc);
+    }
     previewImage.src = '';
     const pv = document.getElementById('preview-viewport');
     if (pv) pv.hidden = true;
@@ -475,12 +489,16 @@ analyzeBtn.addEventListener('click', () => runAnalysis(previewImage, detCanvas))
 
 async function runAnalysis(imgEl, canvas, options = {}) {
     const { silent = false, skipHistory = false } = options;
-    if (!classifierModel || !detectorModel) {
-        if (!silent) alert('Mô hình AI chưa sẵn sàng, vui lòng đợi giây lát!');
+    var st = window.AppState;
+    var classifier = st.models.classifier.instance;
+    var detector   = st.models.detector.instance;
+
+    if (!classifier && !detector) {
+        if (!silent) showToast({ type: 'error', title: 'Mô hình chưa sẵn sàng', message: 'Chưa có mô hình AI nào hoạt động. Vui lòng đợi hoặc thử tải lại.', duration: 4000 });
         return null;
     }
-    const doClassify = document.getElementById('opt-classify').checked;
-    const doDetect   = document.getElementById('opt-detect').checked;
+    const doClassify = document.getElementById('opt-classify').checked && classifier;
+    const doDetect   = document.getElementById('opt-detect').checked && detector;
     const doBBoxes   = document.getElementById('opt-bboxes').checked;
 
     if (!silent) {
@@ -499,19 +517,77 @@ async function runAnalysis(imgEl, canvas, options = {}) {
         document.querySelector('#result-dot').className = 'pulse-dot loading';
     }
 
+    // Phase 2: Use inference canvas for large images
+    var inferenceCanvas = null;
+    var inferenceScaleX = 1, inferenceScaleY = 1;
+    var effectiveImgEl = imgEl;
+
     try {
-        const tasks = [];
-        if (doClassify) tasks.push(classifierModel.classify(imgEl));
-        else tasks.push(Promise.resolve([]));
-        if (doDetect) tasks.push(detectorModel.detect(imgEl));
-        else tasks.push(Promise.resolve([]));
+        // Wait for image to load if needed
+        if (!imgEl.complete || imgEl.naturalWidth === 0) {
+            await new Promise(function(resolve, reject) {
+                imgEl.onload = resolve;
+                imgEl.onerror = function() { reject(new Error('Image decode failed')); };
+                // If already errored, trigger onerror
+                if (imgEl.naturalWidth === 0 && !imgEl.complete) {
+                    // still loading
+                }
+            });
+        }
+
+        // Create inference canvas (resized if needed)
+        var proc = createInferenceCanvas(imgEl);
+        inferenceCanvas = proc.canvas;
+        inferenceScaleX = proc.scaleX;
+        inferenceScaleY = proc.scaleY;
+
+        // Use canvas for detection, original image for classification (MobileNet handles any size)
+        var detectSource = (doDetect && detector) ? inferenceCanvas : imgEl;
+        var classifySource = (doClassify && classifier) ? imgEl : imgEl;
+
+        var t0 = performance.now();
+        var tasks = [];
+        var classTime = 0, detectTime = 0;
+
+        if (doClassify && classifier) {
+            var ct0 = performance.now();
+            tasks.push(classifier.classify(classifySource).then(function(r) { classTime = performance.now() - ct0; return r; }));
+        } else {
+            tasks.push(Promise.resolve([]));
+        }
+        if (doDetect && detector) {
+            var dt0 = performance.now();
+            tasks.push(detector.detect(detectSource).then(function(r) { detectTime = performance.now() - dt0; return r; }));
+        } else {
+            tasks.push(Promise.resolve([]));
+        }
 
         const [predictions, detections] = await Promise.all(tasks);
+        var totalTime = performance.now() - t0;
 
-        const rawDetections = detections;
-        const filtered = applyDetectionFilters(rawDetections);
+        var rawDetections = detections;
+        var filtered = applyDetectionFilters(rawDetections);
 
-        if (doDetect && filtered.length > 0) {
+        // Scale detection bboxes from inference canvas coords to display coords
+        if (filtered.length > 0 && inferenceCanvas && (inferenceCanvas.width !== imgEl.naturalWidth || inferenceCanvas.height !== imgEl.naturalHeight)) {
+            // For display, we need to map back to original image coords first, then to canvas display coords
+            // getImageMetrics handles the display mapping from original image coords
+            // So we scale detections back to original image coords
+            filtered = filtered.map(function(d) {
+                return {
+                    class: d.class,
+                    score: d.score,
+                    bbox: [
+                        d.bbox[0] * inferenceScaleX,
+                        d.bbox[1] * inferenceScaleY,
+                        d.bbox[2] * inferenceScaleX,
+                        d.bbox[3] * inferenceScaleY
+                    ]
+                };
+            });
+        }
+
+        if (doDetect && detector && filtered.length > 0) {
             renderDetectionTags(filtered);
             detectionsSection.hidden = false;
             if (doBBoxes) drawBoundingBoxes(imgEl, canvas, filtered);
@@ -525,7 +601,7 @@ async function runAnalysis(imgEl, canvas, options = {}) {
         if (typeof updateResultsUI === 'function') updateResultsUI(predictions, filtered);
         else if (typeof renderResultTable === 'function') renderResultTable(filtered);
 
-        if (doClassify && predictions.length > 0) {
+        if (doClassify && classifier && predictions.length > 0) {
             classifyLabel.hidden = false;
             renderPredictions(predictions);
         }
@@ -536,15 +612,22 @@ async function runAnalysis(imgEl, canvas, options = {}) {
             document.querySelector('#result-dot').className = 'pulse-dot success';
         }
 
+        // Store in AppState
         const result = {
             src: imgEl.src || captureImageDataUrl(imgEl),
-            predictions,
-            rawDetections,
+            predictions: predictions,
+            rawDetections: rawDetections,
             detections: filtered,
-            description,
-            time: new Date().toISOString()
+            description: description,
+            time: new Date().toISOString(),
+            classificationTimeMs: classTime || null,
+            detectionTimeMs: detectTime || null,
+            totalTimeMs: totalTime
         };
-        lastAnalysis = result;
+        st.analysis.lastResult = result;
+        st.analysis.isRunning = false;
+        st.analysis.completedAt = Date.now();
+        st.analysis.totalTimeMs = totalTime;
 
         if (!skipHistory) {
             totalImages++;
@@ -554,6 +637,7 @@ async function runAnalysis(imgEl, canvas, options = {}) {
         return result;
 
     } catch (err) {
+        st.analysis.isRunning = false;
         if (!silent) {
             statusText.textContent = 'Lỗi phân tích!';
             document.querySelector('#result-dot').className = 'pulse-dot error';
@@ -695,7 +779,7 @@ function generateDescription(predictions, detections) {
     return desc;
 }
 
-// ── History ──────────────────────────────────────
+// ── History (uses history-safe.js) ──────────────
 function addToHistory(result) {
     const empty = historyList.querySelector('.history-empty');
     if (empty) empty.remove();
@@ -703,43 +787,63 @@ function addToHistory(result) {
     const label = result.predictions?.[0]?.className?.split(',')[0] || 'Hình ảnh';
     const time  = new Date(result.time).toLocaleTimeString('vi-VN', { hour:'2-digit', minute:'2-digit' });
     const id    = result.id || Date.now().toString();
-    result.id = id;
 
+    // Generate thumbnail from image element
+    var thumb = '';
+    var img = document.getElementById('preview-image');
+    if (img && img.complete && img.naturalWidth > 0) {
+        thumb = generateThumbnail(img);
+    }
+
+    // Save via history-safe module
+    addHistoryItem({
+        id: id,
+        fileName: label,
+        createdAt: Date.now(),
+        thumbnail: thumb,
+        classificationSummary: result.predictions?.slice(0, 3).map(function(p) { return p.className.split(',')[0] + ' (' + (p.probability * 100).toFixed(0) + '%)'; }).join('; ') || '',
+        detectionSummary: (result.detections || []).slice(0, 5).map(function(d) { return translateLabel(d.class) + ' (' + (d.score * 100).toFixed(0) + '%)'; }).join(', ') || '',
+        totalObjects: (result.detections || []).length,
+        processingTimeMs: result.totalTimeMs || 0
+    });
+
+    // Render in UI
     const item = document.createElement('div');
     item.className = 'history-item';
     item.dataset.id = id;
     item.innerHTML = `
-        <img class="history-thumb" src="${result.src}" alt="${label}">
+        <img class="history-thumb" src="${thumb || result.src}" alt="${label}">
         <div class="history-info">
             <div class="history-label">${translateLabel(label)}</div>
             <div class="history-meta">${result.detections?.length || 0} vật thể · ${time}</div>
         </div>`;
     item.addEventListener('click', () => restoreFromHistory(id));
     historyList.prepend(item);
+    result.id = id;
     analysisHistory.unshift(result);
 
     while (historyList.querySelectorAll('.history-item').length > MAX_HISTORY) {
-        historyList.lastElementChild?.remove();
+        var last = historyList.lastElementChild;
+        if (last) last.remove();
         analysisHistory.pop();
     }
-    saveHistoryToStorage();
-    restoreFromHistory(id);
 }
 
 function restoreFromHistory(id) {
-    const entry = analysisHistory.find(h => h.id === id);
+    // Try new storage first, fall back to old in-memory
+    var entry = analysisHistory.find(function(h) { return h.id === id; });
     if (!entry) return;
 
     historyList.querySelectorAll('.history-item').forEach(el => {
         el.classList.toggle('active', el.dataset.id === id);
     });
 
-    lastAnalysis = {
+    window.lastAnalysis = {
         ...entry,
         rawDetections: entry.rawDetections || entry.detections || []
     };
-    const filtered = applyDetectionFilters(lastAnalysis.rawDetections);
-    lastAnalysis.detections = filtered;
+    const filtered = applyDetectionFilters(window.lastAnalysis.rawDetections);
+    window.lastAnalysis.detections = filtered;
     resultsSection.hidden = false;
     predictionList.innerHTML = '';
     detTags.innerHTML = '';
@@ -759,7 +863,7 @@ function restoreFromHistory(id) {
     statusText.textContent = 'Đã tải lại kết quả';
     document.querySelector('#result-dot').className = 'pulse-dot success';
 
-    if (currentMode === 'upload' && entry.src) {
+    if (window.currentMode === 'upload' && entry.src) {
         previewImage.src = entry.src;
         previewImage.hidden = false;
         document.getElementById('upload-placeholder').hidden = true;
@@ -773,66 +877,51 @@ function restoreFromHistory(id) {
     }
 }
 
-function saveHistoryToStorage() {
-    try {
-        const payload = analysisHistory.slice(0, MAX_HISTORY).map(h => ({
-            id: h.id, src: h.src, predictions: h.predictions,
-            rawDetections: h.rawDetections, detections: h.detections,
-            description: h.description, time: h.time
-        }));
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(payload));
-    } catch (e) {
-        console.warn('Không lưu được lịch sử:', e);
-    }
-}
-
-function loadHistoryFromStorage() {
-    try {
-        const raw = localStorage.getItem(HISTORY_KEY);
-        if (!raw) return;
-        const items = JSON.parse(raw);
-        if (!Array.isArray(items) || !items.length) return;
-
-        const empty = historyList.querySelector('.history-empty');
-        if (empty) empty.remove();
-
-        analysisHistory = items;
-        statTotal.textContent = items.length;
-        items.forEach(entry => {
-            const label = entry.predictions?.[0]?.className?.split(',')[0] || 'Hình ảnh';
-            const time  = new Date(entry.time).toLocaleTimeString('vi-VN', { hour:'2-digit', minute:'2-digit' });
-            const item = document.createElement('div');
-            item.className = 'history-item';
-            item.dataset.id = entry.id;
-            item.innerHTML = `
-                <img class="history-thumb" src="${entry.src}" alt="${label}">
-                <div class="history-info">
-                    <div class="history-label">${translateLabel(label)}</div>
-                    <div class="history-meta">${entry.detections?.length || 0} vật thể · ${time}</div>
-                </div>`;
-            item.addEventListener('click', () => restoreFromHistory(entry.id));
-            historyList.appendChild(item);
-        });
-    } catch (e) {
-        console.warn('Không đọc được lịch sử:', e);
-    }
-}
-
+// Save reference to history-safe.js handler before we override
+var __origClearHistory = window.clearHistory;
 function clearHistory() {
-    historyList.innerHTML = `<div class="history-empty">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" opacity="0.3">
-            <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
-            <polyline points="21 15 16 10 5 21"/>
-        </svg><p>Chưa có ảnh nào được phân tích</p></div>`;
+    if (typeof __origClearHistory === 'function') __origClearHistory();
+    else try { localStorage.removeItem(HISTORY_KEY); } catch(e) {}
     analysisHistory = [];
-    localStorage.removeItem(HISTORY_KEY);
     statTotal.textContent = '0';
+}
+
+// ── Load history from safe storage on init ──────
+function loadHistoryFromStorage() {
+    var items = window.getHistory();
+    if (!items || !items.length) return;
+
+    const empty = historyList.querySelector('.history-empty');
+    if (empty) empty.remove();
+
+    var reconstructed = [];
+    items.forEach(function(entry) {
+        var label = entry.classificationSummary?.split(';')[0]?.split('(')[0]?.trim() || 'Hình ảnh';
+        var time = new Date(entry.createdAt).toLocaleTimeString('vi-VN', { hour:'2-digit', minute:'2-digit' });
+        var id = entry.id;
+        var item = document.createElement('div');
+        item.className = 'history-item';
+        item.dataset.id = id;
+        item.innerHTML = `
+            <img class="history-thumb" src="${entry.thumbnail || ''}" alt="${label}">
+            <div class="history-info">
+                <div class="history-label">${label}</div>
+                <div class="history-meta">${entry.totalObjects || 0} vật thể · ${time}</div>
+            </div>`;
+        item.addEventListener('click', function() {
+            // Currently only UI recall — full result data no longer in storage
+            showToast({ type: 'info', title: 'Thông tin', message: 'Chi tiết phân tích không còn trong lịch sử. Vui lòng phân tích lại.', duration: 3000 });
+        });
+        historyList.appendChild(item);
+        reconstructed.push({ id: id, label: label });
+    });
+    analysisHistory = [];
 }
 
 // ── Export Result ────────────────────────────────
 function exportResult() {
-    const latest = lastAnalysis || analysisHistory[0];
-    if (!latest) { alert('Chưa có kết quả để xuất!'); return; }
+    var latest = window.AppState.analysis.lastResult || analysisHistory[0];
+    if (!latest) { showToast({ type: 'warning', title: 'Chưa có kết quả', message: 'Chưa có kết quả để xuất!', duration: 3000 }); return; }
     const lines  = [
         '=== AI Vision Pro — Kết quả nhận diện ===',
         `Thời gian: ${new Date().toLocaleString('vi-VN')}`,
@@ -849,12 +938,13 @@ function exportResult() {
     const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
     const url  = URL.createObjectURL(blob);
     const a    = Object.assign(document.createElement('a'), { href: url, download: 'ket-qua-nhandien.txt' });
-    a.click(); URL.revokeObjectURL(url);
+    a.click();
+    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
 }
 
 function exportAnnotatedImage() {
-    const latest = lastAnalysis;
-    if (!latest?.src) { alert('Chưa có ảnh để xuất!'); return; }
+    var latest = window.AppState.analysis.lastResult;
+    if (!latest?.src) { showToast({ type: 'warning', title: 'Chưa có ảnh', message: 'Chưa có ảnh để xuất!', duration: 3000 }); return; }
 
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -879,59 +969,64 @@ function exportAnnotatedImage() {
         });
         a.click();
     };
-    img.onerror = () => alert('Không thể tải ảnh để xuất.');
+    img.onerror = function() {
+        showToast({ type: 'error', title: 'Lỗi', message: 'Không thể tải ảnh để xuất.', duration: 3000 });
+    };
     img.src = latest.src;
 }
 
-// ── Live Webcam Detection ────────────────────────
-let liveBusy = false;
+function exportJSON() {
+    var latest = window.AppState.analysis.lastResult || analysisHistory[0];
+    if (!latest) { showToast({ type: 'warning', title: 'Chưa có kết quả', message: 'Chưa có kết quả để xuất!', duration: 3000 }); return; }
+    var data = {
+        time: latest.time,
+        classification: (latest.predictions || []).map(function(p) { return { label: p.className, confidence: p.probability }; }),
+        detections: (latest.detections || []).map(function(d) { return { label: d.class, confidence: d.score, bbox: d.bbox }; }),
+        description: latest.description
+    };
+    var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = Object.assign(document.createElement('a'), { href: url, download: 'ket-qua.json' });
+    a.click();
+    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+}
 
+function exportCSV() {
+    var latest = window.AppState.analysis.lastResult || analysisHistory[0];
+    if (!latest) { showToast({ type: 'warning', title: 'Chưa có kết quả', message: 'Chưa có kết quả để xuất!', duration: 3000 }); return; }
+    var rows = [['Nhãn', 'Độ tin cậy', 'x', 'y', 'w', 'h']];
+    (latest.detections || []).forEach(function(d) {
+        rows.push([d.class, d.score.toFixed(3), d.bbox[0].toFixed(1), d.bbox[1].toFixed(1), d.bbox[2].toFixed(1), d.bbox[3].toFixed(1)]);
+    });
+    var csv = rows.map(function(r) { return r.join(','); }).join('\n');
+    var blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = Object.assign(document.createElement('a'), { href: url, download: 'ket-qua.csv' });
+    a.click();
+    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+}
+
+function speakResults() {
+    var latest = window.AppState.analysis.lastResult || analysisHistory[0];
+    if (!latest) { showToast({ type: 'warning', title: 'Chưa có kết quả', message: 'Chưa có kết quả để đọc!', duration: 3000 }); return; }
+    if (!window.speechSynthesis) { showToast({ type: 'warning', title: 'Không hỗ trợ TTS', message: 'Trình duyệt không hỗ trợ đọc giọng nói.', duration: 3000 }); return; }
+    var text = latest.description || 'Không có mô tả.';
+    var utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'vi-VN';
+    window.speechSynthesis.speak(utterance);
+}
+
+// ── Live Webcam Detection (delegated to live-recognize.js, kept for backward compat) ──
 function stopLiveDetection() {
-    liveDetecting = false;
-    if (optAutoShow) optAutoShow.checked = false;
-    liveBadge.hidden = true;
-    if (liveDetectRaf) cancelAnimationFrame(liveDetectRaf);
-    liveDetectRaf = null;
-}
-
-async function liveDetectionLoop() {
-    if (!liveDetecting || !webcamRunning) return;
-    liveDetectRaf = requestAnimationFrame(liveDetectionLoop);
-
-    if (liveBusy || !detectorModel || webcamVideo.readyState < 2) return;
-    if (!document.getElementById('opt-detect').checked) return;
-
-    liveBusy = true;
-    try {
-        const detections = await detectorModel.detect(webcamVideo);
-        const filtered = applyDetectionFilters(detections);
-        if (document.getElementById('opt-bboxes').checked) {
-            drawBoundingBoxes(webcamVideo, webcamCanvas, filtered);
-        } else {
-            const ctx = webcamCanvas.getContext('2d');
-            ctx.clearRect(0, 0, webcamCanvas.width, webcamCanvas.height);
-        }
-    } catch (e) {
-        console.warn('Live detect:', e);
-    } finally {
-        liveBusy = false;
+    window.liveDetecting = false;
+    if (window.AppState.camera.rafId) {
+        cancelAnimationFrame(window.AppState.camera.rafId);
+        window.AppState.camera.rafId = null;
     }
+    if (typeof window.stopShowRecognize === 'function') window.stopShowRecognize();
 }
-
-optAutoShow?.addEventListener('change', () => {
-    if (optAutoShow.checked) {
-        if (!webcamRunning) {
-            optAutoShow.checked = false;
-            alert('Hãy bật camera trước.');
-            return;
-        }
-        if (typeof startShowRecognize === 'function') startShowRecognize();
-    } else if (typeof stopShowRecognize === 'function') {
-        stopShowRecognize();
-        const ctx = webcamCanvas.getContext('2d');
-        ctx.clearRect(0, 0, webcamCanvas.width, webcamCanvas.height);
-    }
-});
+// ponytail: liveDetectionLoop removed — use live-recognize.js showRecognizeLoop instead.
+// optAutoShow listener removed — handled in live-recognize.js only.
 
 confSlider.addEventListener('change', () => {
     saveLabelFilterState();
@@ -939,53 +1034,35 @@ confSlider.addEventListener('change', () => {
 });
 
 confSlider.addEventListener('input', () => {
-    if (lastAnalysis?.rawDetections) refreshDetectionDisplay();
+    var la = window.AppState.analysis.lastResult;
+    if (la?.rawDetections) refreshDetectionDisplay();
 });
 
-// ── Webcam ───────────────────────────────────────
-startWebcamBtn.addEventListener('click', async () => {
-    if (!window.modelsReady) {
-        alert('Mô hình AI chưa tải xong, vui lòng đợi thêm vài giây.');
+// ── Webcam (uses camera-manager.js) ──
+startWebcamBtn.addEventListener('click', function() {
+    if (!window.AppState.anyModelReady()) {
+        showToast({ type: 'warning', title: 'Mô hình chưa sẵn sàng', message: 'Vui lòng đợi mô hình AI tải xong.', duration: 4000 });
         return;
     }
-    try {
-        if (typeof startWebcamWithMode === 'function') await startWebcamWithMode();
-        else {
-            webcamStream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-            });
-            webcamVideo.srcObject = webcamStream;
-            webcamVideo.hidden = false;
-            webcamPlaceholder.hidden = true;
-            startWebcamBtn.hidden = true;
-            stopWebcamBtn.hidden = false;
-            webcamCaptureBtn.disabled = false;
-            webcamRunning = true;
-            if (typeof startShowRecognize === 'function') startShowRecognize();
-        }
-    } catch (e) {
-        alert('Không thể truy cập camera: ' + e.message);
-    }
+    startCamera().then(function() {
+        webcamCaptureBtn.disabled = false;
+        if (typeof startShowRecognize === 'function') startShowRecognize();
+    }).catch(function(err) {
+        webcamCaptureBtn.disabled = true;
+    });
 });
 
-stopWebcamBtn.addEventListener('click', () => {
+stopWebcamBtn.addEventListener('click', function() {
     if (typeof stopShowRecognize === 'function') stopShowRecognize();
     else stopLiveDetection();
-    if (webcamStream) { webcamStream.getTracks().forEach(t => t.stop()); webcamStream = null; }
-    webcamVideo.hidden = true;
-    webcamPlaceholder.hidden = false;
-    startWebcamBtn.hidden = false;
-    stopWebcamBtn.hidden  = true;
+    stopCamera();
     webcamCaptureBtn.disabled = true;
-    const flipBtn = document.getElementById('flip-camera-btn');
-    if (flipBtn) flipBtn.hidden = true;
-    webcamRunning = false;
     const ctx = webcamCanvas.getContext('2d');
     ctx.clearRect(0, 0, webcamCanvas.width, webcamCanvas.height);
 });
 
 webcamCaptureBtn.addEventListener('click', async () => {
-    if (!webcamRunning || !classifierModel || !detectorModel) return;
+    if (!window.webcamRunning || !window.classifierModel || !window.detectorModel) return;
     if (typeof stopShowRecognize === 'function') stopShowRecognize();
     else stopLiveDetection();
     const offscreen = document.createElement('canvas');
@@ -997,6 +1074,12 @@ webcamCaptureBtn.addEventListener('click', async () => {
     img.onload = async () => {
         await runAnalysis(img, webcamCanvas);
     };
+});
+
+// ── Flip camera ──
+document.getElementById('flip-camera-btn')?.addEventListener('click', function() {
+    window.facingMode = window.facingMode === 'environment' ? 'user' : 'environment';
+    startCamera();
 });
 
 // ── Translation Dictionary ───────────────────────
@@ -1055,4 +1138,32 @@ function translateLabel(label) {
     return label;
 }
 
+// ── Init ──
 initLabelFilter();
+loadHistoryFromStorage();
+
+// Kick off model loading — this was the critical missing call.
+// modelLoader.init() is defined in js/model-loader.js and handles
+// independent status for MobileNet and COCO-SSD with 30s timeout.
+if (typeof modelLoader !== 'undefined' && modelLoader.init) {
+    modelLoader.init();
+}
+
+// Update nav status based on AppState
+function __pollAppState() {
+    var st = window.AppState;
+    var navDot = document.querySelector('#model-status .pulse-dot');
+    if (st.anyModelReady()) {
+        if (navDot) navDot.className = 'pulse-dot success';
+        navStatusText.textContent = 'Hệ thống AI sẵn sàng';
+        statusText.textContent = 'Sẵn sàng';
+    } else if (st.models.classifier.status === 'loading' || st.models.detector.status === 'loading') {
+        if (navDot) navDot.className = 'pulse-dot loading';
+        navStatusText.textContent = 'Đang tải mô hình AI…';
+    } else if (st.models.classifier.status === 'error' && st.models.detector.status === 'error') {
+        if (navDot) navDot.className = 'pulse-dot error';
+        navStatusText.textContent = 'Lỗi tải mô hình';
+    }
+}
+setInterval(__pollAppState, 2000);
+__pollAppState();

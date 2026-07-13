@@ -252,32 +252,16 @@ function stopShowRecognize() {
 }
 
 async function startWebcamWithMode() {
-    if (webcamStream) {
-        webcamStream.getTracks().forEach(t => t.stop());
+    // ponytail: legacy, delegates to camera-manager. Remove Phase 3.
+    if (window.AppState.camera.isRunning) {
+        stopCamera();
     }
-    webcamStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-            facingMode,
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-        },
-        audio: false
-    });
-    webcamVideo.srcObject = webcamStream;
-    webcamVideo.hidden = false;
-    webcamPlaceholder.hidden = true;
-    startWebcamBtn.hidden = true;
-    stopWebcamBtn.hidden = false;
-    webcamCaptureBtn.disabled = false;
-    if (flipCameraBtn) flipCameraBtn.hidden = false;
-    webcamRunning = true;
-
-    await new Promise((resolve) => {
-        if (webcamVideo.readyState >= 2) resolve();
-        else webcamVideo.onloadeddata = resolve;
-    });
-
-    if (optAutoShow?.checked !== false) startShowRecognize();
+    try {
+        await startCamera();
+        if (optAutoShow?.checked !== false) startShowRecognize();
+    } catch (err) {
+        showToast({ type: 'error', title: 'Không khởi động được camera', message: err.message || 'Lỗi không xác định', duration: 5000 });
+    }
 }
 
 function initShowRecognize() {
@@ -292,9 +276,9 @@ function initShowRecognize() {
         const wasShowing = showRecognizeActive;
         stopShowRecognize();
         try {
-            await startWebcamWithMode();
+            await startCamera();
         } catch (e) {
-            alert('Không đổi được camera: ' + e.message);
+            showToast({ type: 'error', title: 'Không đổi được camera', message: e.message || 'Lỗi không xác định', duration: 5000 });
         }
         if (wasShowing) startShowRecognize();
     });

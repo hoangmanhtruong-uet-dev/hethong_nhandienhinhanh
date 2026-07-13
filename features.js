@@ -3,7 +3,13 @@
 const BBOX_STYLE_KEY = 'ai-vision-bbox-style';
 const MAX_BATCH_FILES = 5;
 
-let modelsReady = false;
+// modelsReady removed Phase 2 — use window.AppState.anyModelReady().
+// Kept alias for backward compat until Phase 3.
+Object.defineProperty(window, 'modelsReady', {
+  get: function() { return window.AppState && window.AppState.anyModelReady(); },
+  set: function(v) { /* no-op, kept for compat */ }
+});
+
 let batchQueue = [];
 let batchProcessing = false;
 let previewZoom = 1;
@@ -105,16 +111,18 @@ function hideZoneSkeleton() {
     if (!zoneSkeleton) return;
     zoneSkeleton.hidden = true;
     dropZone?.classList.remove('zone-locked');
-    if (modelsReady && !previewImage?.hidden && previewImage?.src) {
+    if (window.AppState && window.AppState.anyModelReady() && !previewImage?.hidden && previewImage?.src) {
         analyzeBtn && (analyzeBtn.disabled = false);
     }
 }
 
 function setModelsReady(ready) {
-    modelsReady = ready;
-    window.modelsReady = ready;
-    if (ready) hideZoneSkeleton();
-    else showZoneSkeleton('Đang tải mô hình AI…', 'model');
+    // ponytail: backward compat bridge — uses AppState status instead.
+    if (ready) {
+        if (window.AppState.models.classifier.status === 'idle') window.AppState.models.classifier.status = 'ready';
+        if (window.AppState.models.detector.status === 'idle') window.AppState.models.detector.status = 'ready';
+    }
+    hideZoneSkeleton();
 }
 
 // ── Preview zoom / pan ───────────────────────────
@@ -138,7 +146,7 @@ function showPreviewImage(src) {
     previewImage.src = src;
     resetPreviewTransform();
     resetBtn && (resetBtn.hidden = false);
-    if (modelsReady) analyzeBtn.disabled = false;
+    if (window.AppState && window.AppState.anyModelReady()) analyzeBtn.disabled = false;
 }
 
 function initPreviewZoom() {
@@ -174,14 +182,14 @@ function initPreviewZoom() {
     zoomResetBtn?.addEventListener('click', (e) => {
         e.stopPropagation();
         resetPreviewTransform();
-        if (lastAnalysis?.detections?.length && !previewImage.hidden) {
-            drawBoundingBoxes(previewImage, detCanvas, lastAnalysis.detections);
+        if (window.AppState?.analysis?.lastResult?.detections?.length && !previewImage.hidden) {
+            drawBoundingBoxes(previewImage, detCanvas, window.AppState.analysis.lastResult.detections);
         }
     });
 
     previewImage?.addEventListener('load', () => {
-        if (lastAnalysis?.detections?.length) {
-            drawBoundingBoxes(previewImage, detCanvas, lastAnalysis.detections);
+        if (window.AppState?.analysis?.lastResult?.detections?.length) {
+            drawBoundingBoxes(previewImage, detCanvas, window.AppState.analysis.lastResult.detections);
         }
     });
 }
@@ -213,7 +221,7 @@ function renderResultTable(detections) {
         resultTableEmpty.hidden = rows.length > 0;
     }
     if (utilitiesBar) {
-        utilitiesBar.hidden = !lastAnalysis;
+        utilitiesBar.hidden = !window.AppState?.analysis?.lastResult;
     }
 
     rows.forEach((row, i) => {
@@ -242,7 +250,7 @@ function updateResultsUI(predictions, detections) {
 
 // ── Export JSON / CSV ────────────────────────────
 function getExportPayload() {
-    const latest = lastAnalysis;
+    const latest = window.AppState?.analysis?.lastResult;
     if (!latest) return null;
     return {
         exportedAt: new Date().toISOString(),
@@ -279,13 +287,13 @@ function downloadBlob(content, filename, mime) {
 
 function exportJSON() {
     const payload = getExportPayload();
-    if (!payload) { alert('Chưa có kết quả để xuất!'); return; }
+    if (!payload) { showToast({ type: 'warning', title: 'Chưa có kết quả', message: 'Chưa có kết quả để xuất!', duration: 3000 }); return; }
     downloadBlob(JSON.stringify(payload, null, 2), 'ket-qua-nhandien.json', 'application/json');
 }
 
 function exportCSV() {
-    const latest = lastAnalysis;
-    if (!latest?.detections?.length) { alert('Chưa có vật thể để xuất CSV!'); return; }
+    const latest = window.AppState?.analysis?.lastResult;
+    if (!latest?.detections?.length) { showToast({ type: 'warning', title: 'Chưa có dữ liệu', message: 'Chưa có vật thể để xuất CSV!', duration: 3000 }); return; }
     const header = 'id,class,label_vi,confidence,x,y,width,height';
     const lines = latest.detections.map((d, i) => {
         const [x, y, w, h] = d.bbox;
@@ -299,10 +307,10 @@ function exportCSV() {
 let speechUtterance = null;
 
 function speakResults() {
-    const latest = lastAnalysis;
-    if (!latest) { alert('Chưa có kết quả để đọc!'); return; }
+    const latest = window.AppState?.analysis?.lastResult;
+    if (!latest) { showToast({ type: 'warning', title: 'Chưa có kết quả', message: 'Chưa có kết quả để đọc!', duration: 3000 }); return; }
     if (!('speechSynthesis' in window)) {
-        alert('Trình duyệt không hỗ trợ Text-to-Speech.');
+        showToast({ type: 'warning', title: 'Không hỗ trợ TTS', message: 'Trình duyệt không hỗ trợ Text-to-Speech.', duration: 3000 });
         return;
     }
     window.speechSynthesis.cancel();
@@ -313,7 +321,7 @@ function speakResults() {
             `${translateLabel(r.class)} ${(r.score * 100).toFixed(0)} phần trăm`
         ).join(', ');
     }
-    if (!text) { alert('Không có nội dung để đọc.'); return; }
+    if (!text) { showToast({ type: 'info', title: 'Không có nội dung', message: 'Không có nội dung để đọc.', duration: 3000 }); return; }
 
     speechUtterance = new SpeechSynthesisUtterance(text);
     speechUtterance.lang = 'vi-VN';
@@ -374,7 +382,7 @@ function enqueueBatchFiles(files) {
     const list = [...files].filter(f => f.type.startsWith('image/')).slice(0, MAX_BATCH_FILES);
     if (!list.length) return;
     if (files.length > MAX_BATCH_FILES) {
-        alert(`Chỉ xử lý tối đa ${MAX_BATCH_FILES} ảnh mỗi lần.`);
+        showToast({ type: 'warning', title: 'Giới hạn batch', message: `Chỉ xử lý tối đa ${MAX_BATCH_FILES} ảnh mỗi lần.`, duration: 3000 });
     }
 
     batchQueue = [];
@@ -401,7 +409,7 @@ function enqueueBatchFiles(files) {
 // ── Init ─────────────────────────────────────────
 function initProFeatures() {
     loadBboxStyle();
-    showZoneSkeleton('Đang tải mô hình AI…', 'model');
+    // Phase 2: skeleton managed by model-loader.js. Don't show here.
 
     bboxColorInput?.addEventListener('input', onBboxStyleChange);
     bboxWidthSlider?.addEventListener('input', () => {
@@ -430,4 +438,4 @@ window.drawBoxOnContext = drawBoxOnContext;
 window.enqueueBatchFiles = enqueueBatchFiles;
 window.buildDetectionSummary = buildDetectionSummary;
 window.resetPreviewTransform = resetPreviewTransform;
-window.modelsReady = false;
+// window.modelsReady removed Phase 2 — use getter above.

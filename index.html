@@ -75,6 +75,21 @@
                 </button>
             </div>
 
+            <!-- Model Status -->
+            <div class="options-group model-status-group">
+                <h3 class="options-title">Trạng thái mô hình AI</h3>
+                <div class="model-status-row">
+                    <span class="model-name">MobileNet</span>
+                    <span class="model-badge model-idle" id="model-status-classifier"><span class="dot"></span> Chưa tải</span>
+                    <button class="btn btn-sm btn-retry" id="retry-classifier" disabled onclick="retryModel('classifier')">Thử lại</button>
+                </div>
+                <div class="model-status-row">
+                    <span class="model-name">COCO-SSD</span>
+                    <span class="model-badge model-idle" id="model-status-detector"><span class="dot"></span> Chưa tải</span>
+                    <button class="btn btn-sm btn-retry" id="retry-detector" disabled onclick="retryModel('detector')">Thử lại</button>
+                </div>
+            </div>
+
             <!-- Detection Options -->
             <div class="options-group">
                 <h3 class="options-title">Tùy chọn nhận diện</h3>
@@ -368,6 +383,12 @@
         <p>© 2025 AI Vision Pro — Powered by <strong>TensorFlow.js</strong> · MobileNet v2 · COCO-SSD</p>
     </footer>
 
+    <script src="js/app-state.js"></script>
+    <script src="js/toast.js"></script>
+    <script src="js/image-processor.js"></script>
+    <script src="js/history-safe.js"></script>
+    <script src="js/camera-manager.js"></script>
+    <script src="js/model-loader.js"></script>
     <script src="script.js"></script>
     <script src="features.js"></script>
     <script src="live-recognize.js"></script>
