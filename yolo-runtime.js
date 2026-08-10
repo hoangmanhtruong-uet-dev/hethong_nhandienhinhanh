@@ -3,7 +3,8 @@
 
   const INPUT_SIZE = 640;
   const MODEL_URL = '/assets/models/yolov8n.onnx';
-  const RUNTIME_URL = '/vendor/ort.webgpu.min.js';
+  const WEBGPU_RUNTIME_URL = '/vendor/ort.webgpu.min.js';
+  const WASM_RUNTIME_URL = '/vendor/ort.wasm.min.js';
   const COCO_LABELS = [
     'person','bicycle','car','motorcycle','airplane','bus','train','truck','boat','traffic light',
     'fire hydrant','stop sign','parking meter','bench','bird','cat','dog','horse','sheep','cow',
@@ -23,8 +24,15 @@
     const memory = Number(navigator.deviceMemory || 0);
     const cores = Number(navigator.hardwareConcurrency || 0);
     const saveData = Boolean(navigator.connection?.saveData);
+    const userAgent = navigator.userAgent || '';
+    const ios = /iPad|iPhone|iPod/.test(userAgent)
+      || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const chromium = /Chrome|Chromium|Edg\//.test(userAgent) && !ios;
+    // Safari may expose navigator.gpu before its ONNX WebGPU path is reliable.
+    // Keep iOS and non-Chromium browsers on the stable single-thread WASM build.
+    const webgpu = Boolean(navigator.gpu) && chromium;
     const weak = saveData || (memory > 0 && memory < 4) || (cores > 0 && cores < 4);
-    return { weak, memory, cores, saveData, webgpu: Boolean(navigator.gpu) };
+    return { weak, memory, cores, saveData, webgpu, ios };
   }
 
   function loadScript(src) {
@@ -55,25 +63,16 @@
       throw error;
     }
     loadingPromise = (async () => {
-      await loadScript(RUNTIME_URL);
+      await loadScript(assessment.webgpu ? WEBGPU_RUNTIME_URL : WASM_RUNTIME_URL);
       window.ort.env.wasm.wasmPaths = '/vendor/';
-      window.ort.env.wasm.numThreads = assessment.cores >= 6 ? 2 : 1;
+      window.ort.env.wasm.numThreads = self.crossOriginIsolated && assessment.cores >= 6 ? 2 : 1;
       window.ort.env.wasm.proxy = false;
-      const providers = assessment.webgpu ? ['webgpu', 'wasm'] : ['wasm'];
-      try {
-        session = await window.ort.InferenceSession.create(MODEL_URL, {
-          executionProviders: providers,
-          graphOptimizationLevel: 'all',
-          executionMode: 'sequential',
-        });
-        executionProvider = assessment.webgpu ? 'webgpu' : 'wasm';
-      } catch (primaryError) {
-        if (!assessment.webgpu) throw primaryError;
-        session = await window.ort.InferenceSession.create(MODEL_URL, {
-          executionProviders: ['wasm'], graphOptimizationLevel: 'all', executionMode: 'sequential',
-        });
-        executionProvider = 'wasm';
-      }
+      session = await window.ort.InferenceSession.create(MODEL_URL, {
+        executionProviders: [assessment.webgpu ? 'webgpu' : 'wasm'],
+        graphOptimizationLevel: 'all',
+        executionMode: 'sequential',
+      });
+      executionProvider = assessment.webgpu ? 'webgpu' : 'wasm';
       return { provider: executionProvider };
     })();
     try {

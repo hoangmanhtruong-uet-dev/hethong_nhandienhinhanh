@@ -14,6 +14,7 @@ await cp(resolve(root, 'assets'), resolve(dist, 'assets'), { recursive: true });
 await mkdir(resolve(dist, 'vendor'), { recursive: true });
 for (const file of [
   'ort.webgpu.min.js',
+  'ort.wasm.min.js',
   'ort-wasm-simd-threaded.mjs',
   'ort-wasm-simd-threaded.wasm',
   'ort-wasm-simd-threaded.jsep.mjs',

@@ -208,6 +208,7 @@ def test_pwa_assets_are_served() -> None:
         assert model.status_code == 200
         assert len(model.content) > 10_000_000
         assert client.get("/vendor/ort.webgpu.min.js").status_code == 200
+        assert client.get("/vendor/ort.wasm.min.js").status_code == 200
 
 
 def test_two_factor_authenticator_flow() -> None:
