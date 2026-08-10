@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 from datetime import timedelta
 from typing import Annotated, Literal
 
@@ -138,7 +139,12 @@ def readiness(db: DbSession) -> dict:
     if (settings.require_smtp and not settings.smtp_host) or (settings.require_email_provider and email_provider == "none"):
         raise HTTPException(status_code=503, detail={"status": "not_ready", "email": "Email provider is required but not configured."})
     checks["email"] = {"status": "ok" if email_provider != "none" else "optional", "provider": email_provider}
-    return {"status": "ready", "checks": checks}
+    release_commit = os.getenv("RENDER_GIT_COMMIT", "local").strip() or "local"
+    return {
+        "status": "ready",
+        "checks": checks,
+        "release": {"commit": release_commit[:12]},
+    }
 
 
 @router.post("/scans", response_model=ScanResponse, status_code=status.HTTP_201_CREATED, tags=["scans"])

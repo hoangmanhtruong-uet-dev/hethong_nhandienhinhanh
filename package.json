@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "node --check script.js && node --check yolo-runtime.js",
-    "check:yolo": "node scripts/check-yolo.mjs"
+    "check": "node --check script.js && node --check yolo-runtime.js && node --check scripts/smoke-production.mjs",
+    "check:yolo": "node scripts/check-yolo.mjs",
+    "smoke:production": "node scripts/smoke-production.mjs"
   },
   "dependencies": {
     "onnxruntime-web": "1.27.0"

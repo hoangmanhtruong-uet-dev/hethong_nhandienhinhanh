@@ -1,5 +1,19 @@
 # Production deployment
 
+## Automated production smoke test
+
+After `Vision AI CI` succeeds on `main`, GitHub Actions starts `Vision AI Production Smoke`.
+The smoke job waits until Render reports the same Git commit, then checks readiness,
+the PWA manifest/service worker, and verifies that private API endpoints reject anonymous access.
+It performs no writes and creates no production accounts, scans, or collections.
+
+Run the same check locally with:
+
+```powershell
+$env:VISION_AI_SMOKE_URL="https://hethong-nhandienhinhanh.onrender.com"
+npm run smoke:production
+```
+
 The production stack contains one FastAPI container and Caddy as the HTTPS reverse proxy. PostgreSQL remains on Aiven and images remain on Cloudinary.
 
 ## Prerequisites

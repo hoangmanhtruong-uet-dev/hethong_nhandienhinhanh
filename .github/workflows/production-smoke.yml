@@ -1,0 +1,33 @@
+name: Vision AI Production Smoke
+
+on:
+  workflow_run:
+    workflows: ["Vision AI CI"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-production:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VISION_AI_SMOKE_URL: https://hethong-nhandienhinhanh.onrender.com
+      EXPECTED_COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
+      SMOKE_TIMEOUT_MS: "720000"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Wait for Render and smoke test production
+        run: npm run smoke:production
