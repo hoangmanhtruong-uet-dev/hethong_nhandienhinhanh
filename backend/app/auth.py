@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import io
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
@@ -8,6 +11,9 @@ from typing import Annotated
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pwdlib import PasswordHash
+from cryptography.fernet import Fernet, InvalidToken
+import pyotp
+import qrcode
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -24,6 +30,10 @@ from .schemas import (
     RegisterRequest,
     SessionResponse,
     TeamMemberResponse,
+    TwoFactorDisableRequest,
+    TwoFactorEnableRequest,
+    TwoFactorLoginRequest,
+    TwoFactorSetupResponse,
     UserResponse,
     UserRoleUpdate,
 )
@@ -45,6 +55,38 @@ def digest(value: str) -> str:
 
 def normalize_email(email: str) -> str:
     return email.strip().casefold()
+
+
+def _fernet() -> Fernet:
+    if not settings.encryption_key or len(settings.encryption_key) < 32:
+        raise HTTPException(status_code=503, detail="Máy chủ chưa cấu hình VISION_AI_ENCRYPTION_KEY cho 2FA.")
+    key = base64.urlsafe_b64encode(hashlib.sha256(settings.encryption_key.encode("utf-8")).digest())
+    return Fernet(key)
+
+
+def _seal(payload: dict) -> str:
+    return _fernet().encrypt(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
+
+
+def _open(token: str) -> dict:
+    try:
+        payload = json.loads(_fernet().decrypt(token.encode("ascii"), ttl=600))
+    except (InvalidToken, ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=401, detail="Mã xác thực đã hết hạn hoặc không hợp lệ.")
+    return payload
+
+
+def _totp_valid(secret: str, code: str) -> bool:
+    return pyotp.TOTP(secret).verify(code, valid_window=1)
+
+
+def _decrypt_user_secret(user: User) -> str:
+    if not user.two_factor_secret:
+        raise HTTPException(status_code=409, detail="Tài khoản chưa thiết lập 2FA.")
+    try:
+        return _fernet().decrypt(user.two_factor_secret.encode("ascii")).decode("ascii")
+    except InvalidToken:
+        raise HTTPException(status_code=503, detail="Không thể giải mã cấu hình 2FA của tài khoản.")
 
 
 def is_https(request: Request) -> bool:
@@ -177,9 +219,69 @@ def login(payload: LoginRequest, request: Request, response: Response, db: DbSes
     user = db.scalar(select(User).where(User.email == normalize_email(str(payload.email))))
     if user is None or not password_hash.verify(payload.password, user.password_hash) or not user.is_active:
         raise HTTPException(status_code=401, detail="Email hoặc mật khẩu không đúng.")
+    if user.two_factor_enabled:
+        challenge = _seal({"purpose": "login", "user_id": user.id, "remember": payload.remember})
+        return AuthResponse(requires_2fa=True, challenge_token=challenge)
     token, _session, max_age = create_session(db, request, user, payload.remember)
     set_session_cookie(response, request, token, max_age)
     return AuthResponse(user=UserResponse.model_validate(user))
+
+
+@router.post("/2fa/setup", response_model=TwoFactorSetupResponse)
+def setup_two_factor(user: SessionUser) -> TwoFactorSetupResponse:
+    secret = pyotp.random_base32()
+    uri = pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name="Vision AI")
+    image = qrcode.make(uri)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return TwoFactorSetupResponse(
+        setup_token=_seal({"purpose": "setup", "user_id": user.id, "secret": secret}),
+        secret=secret,
+        qr_data_url=f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode('ascii')}",
+    )
+
+
+@router.post("/2fa/enable", response_model=UserResponse)
+def enable_two_factor(payload: TwoFactorEnableRequest, user: SessionUser, db: DbSession) -> User:
+    setup = _open(payload.setup_token)
+    if setup.get("purpose") != "setup" or setup.get("user_id") != user.id:
+        raise HTTPException(status_code=401, detail="Phiên thiết lập 2FA không hợp lệ.")
+    secret = str(setup.get("secret", ""))
+    if not _totp_valid(secret, payload.code):
+        raise HTTPException(status_code=400, detail="Mã Authenticator không đúng.")
+    user.two_factor_secret = _fernet().encrypt(secret.encode("ascii")).decode("ascii")
+    user.two_factor_enabled = True
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.post("/2fa/verify-login", response_model=AuthResponse)
+def verify_two_factor_login(payload: TwoFactorLoginRequest, request: Request, response: Response, db: DbSession) -> AuthResponse:
+    challenge = _open(payload.challenge_token)
+    if challenge.get("purpose") != "login":
+        raise HTTPException(status_code=401, detail="Yêu cầu đăng nhập không hợp lệ.")
+    user = db.get(User, challenge.get("user_id"))
+    if user is None or not user.is_active or not user.two_factor_enabled:
+        raise HTTPException(status_code=401, detail="Tài khoản không hợp lệ.")
+    if not _totp_valid(_decrypt_user_secret(user), payload.code):
+        raise HTTPException(status_code=401, detail="Mã Authenticator không đúng.")
+    token, _session, max_age = create_session(db, request, user, bool(challenge.get("remember")))
+    set_session_cookie(response, request, token, max_age)
+    return AuthResponse(user=UserResponse.model_validate(user))
+
+
+@router.post("/2fa/disable", response_model=UserResponse)
+def disable_two_factor(payload: TwoFactorDisableRequest, user: SessionUser, db: DbSession) -> User:
+    if not password_hash.verify(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Mật khẩu không đúng.")
+    if not _totp_valid(_decrypt_user_secret(user), payload.code):
+        raise HTTPException(status_code=400, detail="Mã Authenticator không đúng.")
+    user.two_factor_enabled = False
+    user.two_factor_secret = None
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 @router.post("/logout", response_model=MessageResponse)

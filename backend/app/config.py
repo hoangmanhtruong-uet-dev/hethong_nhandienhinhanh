@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     session_cookie_name: str = "vision_session"
     session_hours: int = Field(default=24, ge=1, le=168)
     remember_session_days: int = Field(default=30, ge=1, le=90)
+    encryption_key: str | None = None
     cloudinary_url: str | None = Field(
         default=None,
         validation_alias=AliasChoices("VISION_AI_CLOUDINARY_URL", "CLOUDINARY_URL"),

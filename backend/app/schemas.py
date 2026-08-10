@@ -25,11 +25,36 @@ class UserResponse(BaseModel):
     email: EmailStr
     display_name: str
     role: str
+    two_factor_enabled: bool
     created_at: datetime
 
 
 class AuthResponse(BaseModel):
-    user: UserResponse
+    user: UserResponse | None = None
+    requires_2fa: bool = False
+    challenge_token: str | None = None
+
+
+class TwoFactorCodeRequest(BaseModel):
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class TwoFactorLoginRequest(TwoFactorCodeRequest):
+    challenge_token: str
+
+
+class TwoFactorEnableRequest(TwoFactorCodeRequest):
+    setup_token: str
+
+
+class TwoFactorDisableRequest(TwoFactorCodeRequest):
+    password: str = Field(min_length=1, max_length=128)
+
+
+class TwoFactorSetupResponse(BaseModel):
+    setup_token: str
+    secret: str
+    qr_data_url: str
 
 
 class SessionResponse(BaseModel):

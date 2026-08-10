@@ -13,8 +13,10 @@ TEST_DIR = Path(tempfile.mkdtemp(prefix="vision-ai-tests-"))
 os.environ["VISION_AI_DATABASE_URL"] = f"sqlite:///{(TEST_DIR / 'test.db').as_posix()}"
 os.environ["VISION_AI_UPLOAD_DIR"] = str(TEST_DIR / "uploads")
 os.environ["VISION_AI_CLOUDINARY_URL"] = ""
+os.environ["VISION_AI_ENCRYPTION_KEY"] = "test-only-encryption-key-32-characters-long"
 
 from fastapi.testclient import TestClient  # noqa: E402
+import pyotp  # noqa: E402
 
 from app.main import app  # noqa: E402
 
@@ -159,3 +161,33 @@ def test_pwa_assets_are_served() -> None:
         assert worker.status_code == 200
         assert worker.headers["service-worker-allowed"] == "/"
         assert "startsWith('/api/')" in worker.text
+
+
+def test_two_factor_authenticator_flow() -> None:
+    with TestClient(app) as client:
+        user = register(client, "twofactor@example.com")
+        setup = client.post("/api/auth/2fa/setup")
+        assert setup.status_code == 200, setup.text
+        setup_data = setup.json()
+        assert setup_data["qr_data_url"].startswith("data:image/png;base64,")
+
+        code = pyotp.TOTP(setup_data["secret"]).now()
+        enabled = client.post("/api/auth/2fa/enable", json={
+            "setup_token": setup_data["setup_token"], "code": code,
+        })
+        assert enabled.status_code == 200, enabled.text
+        assert enabled.json()["two_factor_enabled"] is True
+
+        assert client.post("/api/auth/logout").status_code == 200
+        login = client.post("/api/auth/login", json={
+            "email": user["email"], "password": "correct-horse-2026", "remember": True,
+        })
+        assert login.status_code == 200, login.text
+        assert login.json()["requires_2fa"] is True
+
+        verified = client.post("/api/auth/2fa/verify-login", json={
+            "challenge_token": login.json()["challenge_token"],
+            "code": pyotp.TOTP(setup_data["secret"]).now(),
+        })
+        assert verified.status_code == 200, verified.text
+        assert verified.json()["user"]["id"] == user["id"]

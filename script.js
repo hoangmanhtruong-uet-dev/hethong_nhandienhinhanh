@@ -9,12 +9,14 @@
   const API_ORIGIN = API_BASE.replace(/\/api$/, '');
   const MAX_FILE_BYTES = 15 * 1024 * 1024;
   const MAX_PIXELS = 20 * 1024 * 1024;
-  const PUBLIC_ROUTES = new Set(['onboarding', 'login', 'register', 'forgot-password']);
+  const PUBLIC_ROUTES = new Set(['onboarding', 'login', 'register', 'forgot-password', 'two-factor']);
   const SCREENS = [
     ['onboarding', 'Chào mừng', 'waving_hand'],
     ['login', 'Đăng nhập', 'login'],
     ['register', 'Tạo tài khoản', 'person_add'],
     ['forgot-password', 'Quên mật khẩu', 'key'],
+    ['two-factor', 'Xác minh 2FA', 'password'],
+    ['two-factor-setup', 'Thiết lập 2FA', 'qr_code_2'],
     ['permissions', 'Cấp quyền Camera', 'photo_camera'],
     ['scanner', 'Scanner AI', 'document_scanner'],
     ['processing', 'Đang xử lý AI', 'neurology'],
@@ -40,6 +42,10 @@
     ['share', 'Chia sẻ & Xuất', 'ios_share'],
     ['delete-confirm', 'Xác nhận xóa', 'delete_forever'],
   ];
+  const PRODUCT_ROUTES = new Set([
+    'scanner', 'history', 'collections', 'settings', 'account', 'security',
+    'install', 'sync', 'models', 'team', 'privacy', 'about',
+  ]);
 
   const state = {
     route: 'onboarding',
@@ -65,6 +71,8 @@
     sessions: [],
     apiKeys: [],
     teamMembers: [],
+    twoFactorChallenge: '',
+    twoFactorSetup: null,
     newApiKey: '',
     system: { database: 'unknown', storage: 'unknown' },
     storageEstimate: { usage: 0, quota: 0 },
@@ -165,8 +173,8 @@
       <div class="brand"><span class="brand-mark">${icon('frame_inspect')}</span><span class="brand-copy">Vision AI<small>Neural scanner</small></span></div>
       <div class="rail-label">Không gian làm việc</div>
       <nav class="rail-nav">${nav.map(([route, label, symbol]) => `<a class="rail-link ${state.route === route ? 'active' : ''}" href="#/${route}">${icon(symbol)}<span>${label}</span></a>`).join('')}</nav>
-      <div class="rail-label">Prototype · ${SCREENS.length} màn</div>
-      <button class="rail-link btn-block" data-action="drawer">${icon('apps')}<span>Xem tất cả màn hình</span></button>
+      <div class="rail-label">Hệ thống Vision AI</div>
+      <button class="rail-link btn-block" data-action="drawer">${icon('apps')}<span>Tất cả tính năng</span></button>
       <div class="model-pill"><strong><i class="status-dot ${state.models.status === 'ready' ? 'ready' : state.models.status === 'error' ? 'error' : ''}"></i>${state.models.status === 'ready' ? 'AI sẵn sàng' : state.models.status === 'error' ? 'AI ngoại tuyến' : 'Đang tải mô hình'}</strong><span>MobileNet · COCO-SSD</span></div>
     </aside>`;
   }
@@ -188,9 +196,9 @@
   function drawer() {
     if (!state.drawerOpen) return '';
     return `<div class="sheet-backdrop" data-action="close-drawer"><aside class="drawer" onclick="event.stopPropagation()">
-      <div class="row between"><div class="brand" style="padding:0">${icon('frame_inspect')}<span>${SCREENS.length} màn UI</span></div><button class="icon-btn" data-action="close-drawer">${icon('close')}</button></div>
-      <h2>Vision AI Prototype</h2>
-      ${SCREENS.map(([route,label,symbol], index) => `<a class="screen-link ${state.route === route ? 'active' : ''}" href="#/${route}"><span class="screen-number">${String(index + 1).padStart(2,'0')}</span>${icon(symbol)}<span>${label}</span></a>`).join('')}
+      <div class="row between"><div class="brand" style="padding:0">${icon('frame_inspect')}<span>Vision AI</span></div><button class="icon-btn" data-action="close-drawer">${icon('close')}</button></div>
+      <h2>Điều hướng hệ thống</h2>
+      ${SCREENS.filter(([route]) => PRODUCT_ROUTES.has(route)).map(([route,label,symbol], index) => `<a class="screen-link ${state.route === route ? 'active' : ''}" href="#/${route}"><span class="screen-number">${String(index + 1).padStart(2,'0')}</span>${icon(symbol)}<span>${label}</span></a>`).join('')}
     </aside></div>`;
   }
 
@@ -204,19 +212,15 @@
   function imageBlock(result, editable = false) {
     const source = result?.image_url ? mediaUrl(result.image_url) : state.currentImageUrl;
     return `<div class="result-image">
-      ${source ? `<img src="${esc(source)}" alt="Ảnh đang nhận diện">` : `<div class="scanner-grid"></div><div class="state-page" style="min-height:100%">${icon('image_search')}<p>Ảnh mẫu Vision AI</p></div>`}
-      <div class="bbox"><span class="bbox-label">${esc(result?.primary_label || 'OBJECT_DETECTED')} · ${pct(result?.confidence || .96)}</span></div>
+      ${source ? `<img src="${esc(source)}" alt="Ảnh đang nhận diện">` : `<div class="scanner-grid"></div><div class="state-page" style="min-height:100%">${icon('image_search')}<p>Không có ảnh nhận diện</p></div>`}
+      ${result ? `<div class="bbox"><span class="bbox-label">${esc(result.primary_label || 'OBJECT_DETECTED')} · ${pct(result.confidence)}</span></div>` : ''}
       ${editable ? `<span class="tag active" style="position:absolute;right:10px;bottom:10px">SCAN_COMPLETE</span>` : ''}
     </div>`;
   }
 
-  const sampleResult = () => ({
-    primary_label: 'Thiết bị công nghệ', confidence: .96,
-    description: 'Vision AI phát hiện một thiết bị điện tử với độ tin cậy cao. Bạn có thể xác nhận hoặc chỉnh sửa nhãn để cải thiện kết quả.',
-    model_version: 'MobileNet + COCO-SSD', processing_time_ms: 742,
-    predictions: [{ className: 'electronic device', probability: .96 }, { className: 'technology', probability: .82 }],
-    detections: [{ class: 'object', score: .93, bbox: [20, 20, 200, 140] }],
-  });
+  function noResultPage(title = 'Chưa có kết quả') {
+    return shell(`<main class="page"><div class="state-page"><div class="state-icon">${icon('image_search')}</div><h2>${esc(title)}</h2><p>Hãy chụp hoặc tải một ảnh lên để Vision AI phân tích trước.</p><button class="btn btn-primary" data-go="scanner">${icon('document_scanner')} Mở Scanner</button></div></main>`, { title: 'Vision AI', back: true });
+  }
 
   function onboardingPage() {
     return shell(`<main class="page no-chrome onboarding">
@@ -258,6 +262,19 @@
       <div class="auth-footer"><a class="text-link" href="#/login">${icon('arrow_back')} Quay lại đăng nhập</a></div>`);
   }
 
+  function twoFactorPage() {
+    return authShell(`<div class="auth-heading"><div class="eyebrow">Bảo vệ tài khoản</div><h1>Xác minh 2 bước</h1><p>Nhập mã 6 số đang hiển thị trong ứng dụng Authenticator.</p></div>
+      <form id="two-factor-login-form" class="stack auth-form"><div class="field"><label for="two-factor-code">Mã xác thực</label><input class="input mono" id="two-factor-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required autofocus></div><button class="btn btn-primary btn-block" type="submit">${icon('verified_user')} Xác minh</button></form>
+      <div class="auth-footer"><a class="text-link" href="#/login">${icon('arrow_back')} Quay lại đăng nhập</a></div>`);
+  }
+
+  function twoFactorSetupPage() {
+    const setup = state.twoFactorSetup;
+    if (!setup) return shell(`<main class="page"><div class="state-page"><div class="processing-orb">${icon('qr_code_2')}</div><h2>Đang tạo khóa bảo mật...</h2></div></main>`, { title: 'Thiết lập 2FA', back: true });
+    return shell(`<main class="page"><div class="card" style="text-align:center"><div class="eyebrow">Authenticator</div><h2>Quét mã QR</h2><p class="lead">Dùng Google Authenticator, Microsoft Authenticator hoặc Authy.</p><img src="${esc(setup.qr_data_url)}" alt="Mã QR thiết lập 2FA" style="width:220px;max-width:100%;background:#fff;padding:12px;border-radius:16px"><p class="tiny muted">Không quét được? Nhập khóa thủ công:</p><code class="new-key" style="display:block;word-break:break-all">${esc(setup.secret)}</code></div>
+      <form id="two-factor-enable-form" class="stack" style="margin-top:16px"><div class="field"><label for="two-factor-enable-code">Mã xác minh 6 số</label><input class="input mono" id="two-factor-enable-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></div><button class="btn btn-primary btn-block" type="submit">${icon('shield_lock')} Bật xác thực 2 lớp</button></form></main>`, { title: 'Thiết lập 2FA', back: true });
+  }
+
   function permissionsPage() {
     return shell(`<main class="page"><div class="permission-hero"><div class="permission-orb">${icon('photo_camera')}</div></div>
       <div class="card" style="text-align:center"><div class="eyebrow">Quyền thiết bị</div><h2 style="margin:9px 0">Cho phép truy cập Camera</h2><p class="lead">Camera chỉ được dùng để tạo khung hình nhận diện. Bạn luôn có thể chọn ảnh từ thư viện.</p>
@@ -285,7 +302,8 @@
   }
 
   function resultPage() {
-    const result = state.currentResult || sampleResult();
+    const result = state.currentResult;
+    if (!result) return noResultPage();
     const tags = (result.predictions || []).slice(0, 3).map(item => `<span class="tag active">${esc((item.className || item.class || '').split(',')[0])}</span>`).join('');
     return shell(`<main class="page">${imageBlock(result)}
       <div class="card"><div class="row"><div class="confidence-ring" style="--score:${Math.round(result.confidence * 100)}%" data-score="${pct(result.confidence)}"></div><div><div class="eyebrow">Nhận diện chính</div><h2 style="margin:5px 0 4px">${esc(result.primary_label)}</h2><div class="tag-list">${tags || '<span class="tag">AI Vision</span>'}</div></div></div><p class="lead" style="margin-top:14px">${esc(result.description)}</p></div>
@@ -295,7 +313,8 @@
   }
 
   function editPage() {
-    const result = state.currentResult || sampleResult();
+    const result = state.currentResult;
+    if (!result) return noResultPage('Không có kết quả để chỉnh sửa');
     return shell(`<main class="page">${imageBlock(result, true)}<form id="edit-result" class="stack">
       <div class="field"><label for="edit-label">Tên đối tượng</label><input class="input" id="edit-label" name="label" value="${esc(result.primary_label)}" required maxlength="255"></div>
       <div class="field"><label>Phân loại</label><div class="tag-list"><button type="button" class="tag active" data-label="Công nghệ">Công nghệ</button><button type="button" class="tag" data-label="Điện tử">Điện tử</button><button type="button" class="tag" data-label="Đồ chơi">Đồ chơi</button><button type="button" class="tag" data-label="Khác">+ Thêm</button></div></div>
@@ -336,7 +355,7 @@
     const sessions = state.sessions.map(item => `<div class="security-item"><span class="setting-icon">${icon(item.user_agent?.toLowerCase().includes('mobile') ? 'smartphone' : 'computer')}</span><span><strong>${item.current ? 'Thiết bị hiện tại' : 'Thiết bị đã đăng nhập'}</strong><small>${esc(item.ip_address || 'IP ẩn')} · ${formatDate(item.last_seen_at)}</small></span>${item.current ? '<span class="tag active">Hiện tại</span>' : `<button class="icon-btn" data-revoke-session="${item.id}" aria-label="Đăng xuất thiết bị">${icon('logout')}</button>`}</div>`).join('') || `<p class="empty-copy">Không có phiên đăng nhập hoạt động.</p>`;
     return shell(`<main class="page security-page"><div class="eyebrow">Security control center</div><h1 class="hero-title">Bảo mật & API</h1><p class="lead">Quản lý quyền truy cập và thiết bị đã đăng nhập.</p>
       <div class="security-card accent"><div class="row between"><div><h3>${icon('key')} Quản lý API Key</h3><p>Key chỉ hiện đầy đủ đúng một lần.</p></div><button class="btn btn-primary" data-action="create-api-key">${icon('add')} Tạo key</button></div>${state.newApiKey ? `<div class="new-key"><small>API KEY MỚI — hãy lưu ngay</small><code>${esc(state.newApiKey)}</code><button class="btn btn-ghost btn-block" data-action="copy-api-key">${icon('content_copy')} Sao chép</button></div>` : ''}<div class="stack">${keys}</div></div>
-      <div class="security-card"><h3>${icon('verified_user')} Cài đặt bảo mật</h3><div class="security-status"><span>${icon('cookie')} Session HttpOnly</span><span class="tag active">Đang bật</span></div><div class="security-status"><span>${icon('https')} Mã hóa khi dùng HTTPS</span><span class="tag active">Đang bật</span></div><div class="security-status"><span>${icon('password')} Xác thực hai lớp (2FA)</span><span class="tag">Cần làm tiếp</span></div></div>
+      <div class="security-card"><h3>${icon('verified_user')} Cài đặt bảo mật</h3><div class="security-status"><span>${icon('cookie')} Session HttpOnly</span><span class="tag active">Đang bật</span></div><div class="security-status"><span>${icon('https')} Mã hóa khi dùng HTTPS</span><span class="tag active">Đang bật</span></div><div class="security-status"><span>${icon('password')} Xác thực hai lớp (2FA)</span><button class="btn ${state.user?.two_factor_enabled ? 'btn-danger' : 'btn-primary'}" data-action="${state.user?.two_factor_enabled ? 'disable-2fa' : 'setup-2fa'}">${state.user?.two_factor_enabled ? 'Tắt 2FA' : 'Thiết lập'}</button></div></div>
       <div class="security-card"><h3>${icon('devices')} Thiết bị đã đăng nhập</h3><div class="stack">${sessions}</div></div>
       ${['owner','admin'].includes(state.user?.role) ? `<button class="btn btn-ghost btn-block" data-go="team">${icon('groups')} Quản lý nhóm & phân quyền</button>` : ''}
     </main>`, { title: 'Bảo mật & API', back: true });
@@ -423,7 +442,8 @@
   }
 
   function sharePage() {
-    const result = state.currentResult || sampleResult();
+    const result = state.currentResult;
+    if (!result) return noResultPage('Không có kết quả để chia sẻ');
     return shell(`<main class="page">${imageBlock(result)}<div class="card"><h2 style="margin:0">${esc(result.primary_label)}</h2><p class="lead">${esc(result.description)}</p></div></main><div class="sheet-backdrop"><div class="sheet"><div class="sheet-handle"></div><div class="row between"><div><h2>Chia sẻ & Xuất</h2><p>Chọn định dạng bạn muốn sử dụng.</p></div><button class="icon-btn" data-action="back">${icon('close')}</button></div>
       <button class="action-row" data-action="native-share">${icon('share')}<span><strong>Chia sẻ kết quả</strong><small>Văn bản tóm tắt nhận diện</small></span>${icon('chevron_right')}</button>
       <button class="action-row" data-export="json">${icon('data_object')}<span><strong>Xuất tệp JSON</strong><small>Dữ liệu thô cho nhà phát triển</small></span>${icon('download')}</button>
@@ -443,6 +463,8 @@
       login: loginPage,
       register: registerPage,
       'forgot-password': forgotPasswordPage,
+      'two-factor': twoFactorPage,
+      'two-factor-setup': twoFactorSetupPage,
       permissions: permissionsPage,
       scanner: scannerPage,
       processing: processingPage,
@@ -838,10 +860,15 @@
   }
 
   async function updateResult(form) {
+    if (!state.currentResult) {
+      toast('Không có kết quả để chỉnh sửa.', 'error');
+      go('scanner');
+      return;
+    }
     const label = form.label.value.trim();
     const description = form.description.value.trim();
     if (!label) return;
-    state.currentResult = { ...(state.currentResult || sampleResult()), primary_label: label, description, confirmed: true };
+    state.currentResult = { ...state.currentResult, primary_label: label, description, confirmed: true };
     try {
       if (state.currentResult.id) {
         state.currentResult = await api(`/scans/${state.currentResult.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ primary_label: label, description, confirmed: true }) });
@@ -862,7 +889,11 @@
   }
 
   async function exportResult(format) {
-    const result = state.currentResult || sampleResult();
+    const result = state.currentResult;
+    if (!result) {
+      toast('Không có kết quả để xuất.', 'error');
+      return;
+    }
     if (result.id) {
       window.open(`${API_BASE}/scans/${result.id}/export?format=${format}`, '_blank', 'noopener');
       toast(`Đang xuất ${format.toUpperCase()}...`);
@@ -908,6 +939,11 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: form.email.value.trim(), password: form.password.value, remember: form.remember.checked })
       });
+      if (result.requires_2fa) {
+        state.twoFactorChallenge = result.challenge_token;
+        go('two-factor');
+        return;
+      }
       state.user = result.user;
       localStorage.setItem('vision-onboarded', '1');
       toast('Đăng nhập thành công.');
@@ -916,6 +952,56 @@
       toast(error.message, 'error');
       button.disabled = false;
     }
+  }
+
+  async function submitTwoFactorLogin(form) {
+    const button = form.querySelector('button[type=submit]');
+    button.disabled = true;
+    try {
+      const result = await api('/auth/2fa/verify-login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ challenge_token: state.twoFactorChallenge, code: form.code.value.trim() })
+      });
+      state.user = result.user;
+      state.twoFactorChallenge = '';
+      localStorage.setItem('vision-onboarded', '1');
+      toast('Xác minh thành công.');
+      go('scanner');
+    } catch (error) { toast(error.message, 'error'); button.disabled = false; }
+  }
+
+  async function startTwoFactorSetup() {
+    try {
+      state.twoFactorSetup = await api('/auth/2fa/setup', { method: 'POST' });
+      go('two-factor-setup');
+    } catch (error) { toast(error.message, 'error'); }
+  }
+
+  async function enableTwoFactor(form) {
+    try {
+      state.user = await api('/auth/2fa/enable', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ setup_token: state.twoFactorSetup.setup_token, code: form.code.value.trim() })
+      });
+      state.twoFactorSetup = null;
+      toast('Đã bật xác thực hai lớp.');
+      go('security');
+    } catch (error) { toast(error.message, 'error'); }
+  }
+
+  async function disableTwoFactor() {
+    const password = prompt('Nhập mật khẩu hiện tại để tắt 2FA:');
+    if (!password) return;
+    const code = prompt('Nhập mã 6 số từ Authenticator:');
+    if (!/^\d{6}$/.test(code || '')) return toast('Mã xác thực phải có 6 số.', 'error');
+    try {
+      state.user = await api('/auth/2fa/disable', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password, code })
+      });
+      toast('Đã tắt xác thực hai lớp.');
+      render();
+    } catch (error) { toast(error.message, 'error'); }
   }
 
   async function submitRegister(form) {
@@ -1109,15 +1195,21 @@
       if (action === 'feedback') toast('Cảm ơn bạn! Kênh phản hồi đang được chuẩn bị.');
       if (action === 'logout') logout();
       if (action === 'create-api-key') createApiKey();
+      if (action === 'setup-2fa') startTwoFactorSetup();
+      if (action === 'disable-2fa') disableTwoFactor();
       if (action === 'copy-api-key') { navigator.clipboard?.writeText(state.newApiKey); toast('Đã sao chép API key.'); }
       if (action === 'install-pwa') installPwa();
       if (action === 'apply-update') applyPwaUpdate();
       if (action === 'clear-pwa-cache') clearPwaCache();
       if (action === 'sync-now') { const ok = await checkBackend(); await loadStorageEstimate(); toast(ok ? 'PostgreSQL và kho ảnh đang phản hồi.' : 'Backend chưa kết nối.', ok ? 'success' : 'error'); render(); }
-      if (action === 'copy-summary') { navigator.clipboard?.writeText((state.currentResult || sampleResult()).description); toast('Đã sao chép tóm tắt.'); }
+      if (action === 'copy-summary') {
+        if (!state.currentResult) toast('Không có kết quả để sao chép.', 'error');
+        else { navigator.clipboard?.writeText(state.currentResult.description); toast('Đã sao chép tóm tắt.'); }
+      }
       if (action === 'native-share') {
-        const result = state.currentResult || sampleResult();
-        if (navigator.share) navigator.share({ title: 'Kết quả Vision AI', text: `${result.primary_label} · ${pct(result.confidence)}\n${result.description}` }).catch(() => {});
+        const result = state.currentResult;
+        if (!result) toast('Không có kết quả để chia sẻ.', 'error');
+        else if (navigator.share) navigator.share({ title: 'Kết quả Vision AI', text: `${result.primary_label} · ${pct(result.confidence)}\n${result.description}` }).catch(() => {});
         else { navigator.clipboard?.writeText(result.description); toast('Đã sao chép nội dung chia sẻ.'); }
       }
       event.stopPropagation();
@@ -1127,6 +1219,8 @@
     document.getElementById('login-form')?.addEventListener('submit', event => { event.preventDefault(); submitLogin(event.currentTarget); });
     document.getElementById('register-form')?.addEventListener('submit', event => { event.preventDefault(); submitRegister(event.currentTarget); });
     document.getElementById('forgot-form')?.addEventListener('submit', event => { event.preventDefault(); submitForgot(event.currentTarget); });
+    document.getElementById('two-factor-login-form')?.addEventListener('submit', event => { event.preventDefault(); submitTwoFactorLogin(event.currentTarget); });
+    document.getElementById('two-factor-enable-form')?.addEventListener('submit', event => { event.preventDefault(); enableTwoFactor(event.currentTarget); });
     document.getElementById('power-save')?.addEventListener('change', event => {
       state.modelPreferences.powerSave = event.target.checked;
       localStorage.setItem('vision-power-save', event.target.checked ? '1' : '0');

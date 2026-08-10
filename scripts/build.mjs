@@ -12,4 +12,4 @@ for (const file of ['index.html', 'style.css', 'script.js', 'manifest.webmanifes
 }
 await cp(resolve(root, 'assets'), resolve(dist, 'assets'), { recursive: true });
 
-console.log('Vision AI UI build completed: dist/');
+console.log('Vision AI production build completed: dist/');

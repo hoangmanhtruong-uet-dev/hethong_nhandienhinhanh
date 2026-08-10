@@ -45,6 +45,10 @@ def init_db() -> None:
             user_columns = {column["name"] for column in inspector.get_columns("users")}
             if "role" not in user_columns:
                 connection.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'member' NOT NULL"))
+            if "two_factor_enabled" not in user_columns:
+                connection.execute(text("ALTER TABLE users ADD COLUMN two_factor_enabled BOOLEAN DEFAULT FALSE NOT NULL"))
+            if "two_factor_secret" not in user_columns:
+                connection.execute(text("ALTER TABLE users ADD COLUMN two_factor_secret TEXT"))
             owner_count = connection.execute(text("SELECT COUNT(*) FROM users WHERE role = 'owner'")) .scalar_one()
             if owner_count == 0:
                 connection.execute(text(
