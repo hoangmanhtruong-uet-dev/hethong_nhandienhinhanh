@@ -46,6 +46,10 @@
     params: new URLSearchParams(),
     drawerOpen: false,
     stream: null,
+    cameraFacingMode: localStorage.getItem('vision-camera-facing') || 'environment',
+    cameraDeviceId: null,
+    cameraDevices: [],
+    cameraSwitching: false,
     currentFile: null,
     currentImageUrl: '',
     currentResult: null,
@@ -139,6 +143,11 @@
   function stopCamera() {
     if (state.stream) state.stream.getTracks().forEach(track => track.stop());
     state.stream = null;
+    const video = document.getElementById('scanner-video');
+    if (video) {
+      video.pause();
+      video.srcObject = null;
+    }
   }
 
   function screenTitle(route) {
@@ -260,14 +269,14 @@
 
   function scannerPage() {
     return shell(`<main class="page"><div class="scanner-viewport">
-      <video id="scanner-video" class="scanner-video" autoplay muted playsinline ${state.stream ? '' : 'hidden'}></video>
+      <video id="scanner-video" class="scanner-video ${state.cameraFacingMode === 'user' ? 'front-camera' : ''}" autoplay muted playsinline ${state.stream ? '' : 'hidden'}></video>
       ${state.currentImageUrl && !state.stream ? `<img class="scanner-preview" src="${esc(state.currentImageUrl)}" alt="Ảnh đã chọn">` : ''}
       <div class="scanner-grid"></div><div class="scan-frame"></div><div class="scanner-hint">CĂN VẬT THỂ VÀO KHUNG</div>
       ${!state.stream && !state.currentImageUrl ? `<div class="state-page" style="min-height:100%"><div class="state-icon" style="color:var(--primary);background:var(--primary-soft)">${icon('center_focus_strong')}</div><p>Chọn camera hoặc tải ảnh để bắt đầu</p></div>` : ''}
     </div>
-    <div class="capture-bar"><button class="mini-shot" data-action="pick-file" aria-label="Tải ảnh">${icon('image')}</button><button class="capture" data-action="capture" aria-label="Chụp ảnh"></button><button class="mini-shot" data-action="flip-camera" aria-label="Đổi camera">${icon('cameraswitch')}</button></div>
+    <div class="capture-bar"><button class="mini-shot" data-action="pick-file" aria-label="Tải ảnh">${icon('image')}</button><button class="capture" data-action="capture" aria-label="Chụp ảnh"></button><button class="mini-shot" data-action="flip-camera" aria-label="Đổi camera" ${state.cameraSwitching ? 'disabled' : ''}>${icon(state.cameraSwitching ? 'progress_activity' : 'cameraswitch')}</button></div>
     <input id="scanner-file" type="file" accept="image/jpeg,image/png,image/webp" hidden>
-    <div class="row between" style="margin-top:14px"><span class="tiny mono muted"><i class="status-dot ${state.models.status === 'ready' ? 'ready' : ''}"></i> ${state.models.status === 'ready' ? 'AI READY' : 'LOADING MODELS'}</span><button class="btn btn-ghost" data-action="start-camera">${icon('videocam')} Camera</button></div>
+    <div class="row between" style="margin-top:14px"><span class="tiny mono muted"><i class="status-dot ${state.models.status === 'ready' ? 'ready' : ''}"></i> ${state.stream ? (state.cameraFacingMode === 'user' ? 'CAMERA TRƯỚC' : 'CAMERA SAU') : (state.models.status === 'ready' ? 'AI READY' : 'LOADING MODELS')}</span><button class="btn btn-ghost" data-action="start-camera">${icon('videocam')} Camera</button></div>
     </main>`, { title: 'Scanner AI' });
   }
 
@@ -511,14 +520,101 @@
     }
   }
 
-  async function requestCamera() {
+  async function listVideoDevices() {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
     try {
-      stopCamera();
-      state.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
-      localStorage.setItem('vision-onboarded', '1');
-      go('scanner');
+      return (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'videoinput');
     } catch (_) {
-      toast('Không thể truy cập camera. Bạn vẫn có thể tải ảnh lên.', 'error');
+      return [];
+    }
+  }
+
+  function deviceForFacing(devices, facingMode, currentDeviceId) {
+    const frontPattern = /front|user|facetime|selfie|trước/i;
+    const backPattern = /back|rear|environment|world|sau/i;
+    const pattern = facingMode === 'user' ? frontPattern : backPattern;
+    return devices.find(device => device.deviceId !== currentDeviceId && pattern.test(device.label))
+      || devices.find(device => device.deviceId !== currentDeviceId)
+      || null;
+  }
+
+  function cameraConstraints(facingMode, deviceId) {
+    const video = {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    };
+    if (deviceId) video.deviceId = { exact: deviceId };
+    else video.facingMode = { exact: facingMode };
+    return { video, audio: false };
+  }
+
+  async function requestCamera({ flip = false } = {}) {
+    if (state.cameraSwitching) return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast('Trình duyệt không hỗ trợ camera.', 'error');
+      return;
+    }
+
+    const previousFacingMode = state.cameraFacingMode;
+    const previousDeviceId = state.cameraDeviceId;
+    const desiredFacingMode = flip
+      ? (previousFacingMode === 'environment' ? 'user' : 'environment')
+      : previousFacingMode;
+
+    state.cameraSwitching = true;
+    try {
+      const knownDevices = await listVideoDevices();
+      const selectedDevice = flip && knownDevices.length > 1
+        ? deviceForFacing(knownDevices, desiredFacingMode, previousDeviceId)
+        : null;
+
+      stopCamera();
+      // A short release delay prevents NotReadableError on iOS and some Android devices.
+      if (flip) await new Promise(resolve => setTimeout(resolve, 180));
+
+      const candidates = [
+        cameraConstraints(desiredFacingMode, selectedDevice?.deviceId),
+        cameraConstraints(desiredFacingMode, null),
+        { video: { facingMode: { ideal: desiredFacingMode }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+      ];
+
+      let stream = null;
+      let lastError = null;
+      for (const constraints of candidates) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          break;
+        } catch (error) {
+          lastError = error;
+          if (!['OverconstrainedError', 'NotFoundError', 'NotReadableError', 'AbortError'].includes(error.name)) throw error;
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+      if (!stream) throw lastError || new Error('Không tìm thấy camera phù hợp.');
+
+      state.stream = stream;
+      const settings = stream.getVideoTracks()[0]?.getSettings?.() || {};
+      state.cameraDeviceId = settings.deviceId || selectedDevice?.deviceId || null;
+      state.cameraFacingMode = ['user', 'environment'].includes(settings.facingMode)
+        ? settings.facingMode
+        : desiredFacingMode;
+      state.cameraDevices = await listVideoDevices();
+      localStorage.setItem('vision-camera-facing', state.cameraFacingMode);
+      localStorage.setItem('vision-onboarded', '1');
+      state.cameraSwitching = false;
+
+      // Re-render is required when flipping while already on the scanner route.
+      if (state.route === 'scanner') render();
+      else go('scanner');
+    } catch (error) {
+      state.cameraFacingMode = previousFacingMode;
+      state.cameraDeviceId = previousDeviceId;
+      state.cameraSwitching = false;
+      render();
+      const reason = error?.name === 'NotAllowedError'
+        ? 'Bạn chưa cấp quyền camera cho trình duyệt.'
+        : 'Không đổi được camera. Hãy đóng ứng dụng khác đang dùng camera và thử lại.';
+      toast(reason, 'error');
     }
   }
 
@@ -527,6 +623,7 @@
     if (video && state.stream) {
       video.hidden = false;
       video.srcObject = state.stream;
+      video.onloadedmetadata = () => video.play().catch(() => {});
       video.play().catch(() => {});
     }
   }
@@ -999,7 +1096,7 @@
       if (action === 'request-camera' || action === 'start-camera') requestCamera();
       if (action === 'pick-file') document.querySelector('#scanner-file, #permission-file, #state-file')?.click();
       if (action === 'capture') captureFrame();
-      if (action === 'flip-camera') { toast('Đang đổi camera...'); requestCamera(); }
+      if (action === 'flip-camera') { toast('Đang đổi camera...'); await requestCamera({ flip: true }); }
       if (action === 'save-scan') saveCurrentScan();
       if (action === 'save-collection') saveToCollection();
       if (action === 'new-scan') { state.currentResult = null; state.currentFile = null; go('scanner'); }

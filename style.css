@@ -132,6 +132,7 @@ a { color: inherit; text-decoration: none; }
 
 .scanner-viewport { position: relative; height: 530px; overflow: hidden; margin: -12px -18px 14px; background: radial-gradient(circle at 50% 45%, #14253b, #090b13 60%); }
 .scanner-video, .scanner-preview { width: 100%; height: 100%; object-fit: cover; }
+.scanner-video.front-camera { transform: scaleX(-1); }
 .scanner-grid { pointer-events: none; position: absolute; inset: 0; opacity: .22; background-image: linear-gradient(rgba(12,228,232,.14) 1px, transparent 1px), linear-gradient(90deg, rgba(12,228,232,.14) 1px, transparent 1px); background-size: 44px 44px; }
 .scan-frame { position: absolute; inset: 18% 12%; border: 2px solid var(--cyan); box-shadow: 0 0 25px rgba(12,228,232,.22), inset 0 0 25px rgba(12,228,232,.08); }
 .scan-frame::before, .scan-frame::after { content: ""; position: absolute; left: -2px; right: -2px; height: 2px; background: var(--cyan); box-shadow: 0 0 14px var(--cyan); animation: scanning 2.4s ease-in-out infinite; }

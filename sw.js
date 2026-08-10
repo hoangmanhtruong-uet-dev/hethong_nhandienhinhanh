@@ -1,10 +1,10 @@
-const VERSION = 'vision-ai-v4';
+const VERSION = 'vision-ai-v5';
 const SHELL_CACHE = `${VERSION}-shell`;
 const STATIC_CACHE = `${VERSION}-static`;
 const APP_SHELL = [
   '/',
   '/style.css',
-  '/script.js?v=4',
+  '/script.js?v=5',
   '/manifest.webmanifest',
   '/assets/icons/icon-192.png',
   '/assets/icons/icon-512.png',
