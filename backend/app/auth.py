@@ -8,7 +8,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pwdlib import PasswordHash
 from cryptography.fernet import Fernet, InvalidToken
@@ -19,15 +19,20 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .database import get_db
-from .models import APIKey, SecurityEvent, TwoFactorRecoveryCode, User, UserSession
+from .mailer import send_account_email
+from .models import AccountToken, APIKey, Scan, SecurityEvent, TwoFactorRecoveryCode, User, UserSession
 from .schemas import (
     APIKeyCreate,
     APIKeyCreatedResponse,
     APIKeyResponse,
     AuthResponse,
+    ChangePasswordRequest,
+    DeleteAccountRequest,
+    ForgotPasswordRequest,
     LoginRequest,
     MessageResponse,
     RegisterRequest,
+    ResetPasswordRequest,
     SessionResponse,
     SecurityEventResponse,
     TeamMemberResponse,
@@ -38,9 +43,12 @@ from .schemas import (
     TwoFactorRecoveryCodesResponse,
     TwoFactorRecoveryRegenerateRequest,
     TwoFactorSetupResponse,
+    TokenDispatchResponse,
+    TokenRequest,
     UserResponse,
     UserRoleUpdate,
 )
+from .storage import delete_image
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -101,7 +109,7 @@ def enforce_rate_limit(
         SecurityEvent.event_type == event_type,
         SecurityEvent.created_at >= since,
     ]
-    if event_type != "registration_attempt":
+    if event_type not in {"registration_attempt", "password_reset_requested", "email_verification_requested"}:
         base_filters.append(SecurityEvent.outcome == "failure")
     ip_address = client_ip(request)
     scoped_attempts = db.scalar(select(func.count(SecurityEvent.id)).where(
@@ -169,6 +177,47 @@ def _consume_recovery_code(db: Session, user: User, code: str) -> bool:
     item.used_at = utc_now()
     db.flush()
     return True
+
+
+def _issue_account_token(db: Session, user: User, purpose: str) -> str:
+    db.execute(delete(AccountToken).where(
+        AccountToken.user_id == user.id,
+        AccountToken.purpose == purpose,
+        AccountToken.used_at.is_(None),
+    ))
+    raw = secrets.token_urlsafe(48)
+    db.add(AccountToken(
+        user_id=user.id,
+        purpose=purpose,
+        token_hash=digest(raw),
+        expires_at=utc_now() + timedelta(minutes=settings.account_token_minutes),
+    ))
+    db.commit()
+    return raw
+
+
+def _consume_account_token(db: Session, raw: str, purpose: str) -> tuple[AccountToken, User]:
+    item = db.scalar(select(AccountToken).where(
+        AccountToken.token_hash == digest(raw),
+        AccountToken.purpose == purpose,
+        AccountToken.used_at.is_(None),
+    ).with_for_update())
+    if item is None:
+        raise HTTPException(status_code=400, detail="Token không hợp lệ hoặc đã được sử dụng.")
+    expires_at = item.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= utc_now():
+        raise HTTPException(status_code=400, detail="Token đã hết hạn.")
+    user = db.get(User, item.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=400, detail="Tài khoản không còn hoạt động.")
+    item.used_at = utc_now()
+    return item, user
+
+
+def _debug_token(raw: str) -> str | None:
+    return raw if settings.environment.casefold() != "production" else None
 
 
 def _decrypt_user_secret(user: User) -> str:
@@ -428,9 +477,119 @@ def me(user: CurrentUser) -> User:
     return user
 
 
-@router.post("/forgot-password", response_model=MessageResponse)
+@router.post("/forgot-password-legacy", response_model=MessageResponse, include_in_schema=False)
 def forgot_password() -> MessageResponse:
     return MessageResponse(message="Nếu email tồn tại, hướng dẫn đặt lại mật khẩu sẽ được gửi.")
+
+
+@router.post("/change-password", response_model=MessageResponse)
+def change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    user: SessionUser,
+    db: DbSession,
+    session_token: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
+) -> MessageResponse:
+    if not password_hash.verify(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Mật khẩu hiện tại không đúng.")
+    if password_hash.verify(payload.new_password, user.password_hash):
+        raise HTTPException(status_code=409, detail="Mật khẩu mới phải khác mật khẩu hiện tại.")
+    user.password_hash = password_hash.hash(payload.new_password)
+    current_hash = digest(session_token) if session_token else ""
+    db.execute(delete(UserSession).where(UserSession.user_id == user.id, UserSession.token_hash != current_hash))
+    db.commit()
+    record_security_event(db, request, "password_changed", "success", user=user)
+    return MessageResponse(message="Đã đổi mật khẩu và đăng xuất các thiết bị khác.")
+
+
+@router.post("/email-verification/request", response_model=TokenDispatchResponse)
+def request_email_verification(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    user: SessionUser,
+    db: DbSession,
+) -> TokenDispatchResponse:
+    if user.email_verified_at:
+        return TokenDispatchResponse(message="Email đã được xác minh.")
+    enforce_rate_limit(db, request, "email_verification_requested", user.id, 5, timedelta(hours=1))
+    raw = _issue_account_token(db, user, "verify_email")
+    url = f"{settings.public_app_url.rstrip('/')}/#/verify-email?token={raw}"
+    background_tasks.add_task(send_account_email, user.email, "Xác minh email Vision AI", url, "Xác minh email")
+    record_security_event(db, request, "email_verification_requested", "success", user=user)
+    return TokenDispatchResponse(message="Đã gửi liên kết xác minh email.", debug_token=_debug_token(raw))
+
+
+@router.post("/email-verification/confirm", response_model=UserResponse)
+def confirm_email_verification(payload: TokenRequest, request: Request, db: DbSession) -> User:
+    _item, user = _consume_account_token(db, payload.token, "verify_email")
+    user.email_verified_at = utc_now()
+    db.commit()
+    db.refresh(user)
+    record_security_event(db, request, "email_verified", "success", user=user)
+    return user
+
+
+@router.post("/forgot-password", response_model=TokenDispatchResponse)
+def forgot_password(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+) -> TokenDispatchResponse:
+    email = normalize_email(str(payload.email))
+    enforce_rate_limit(db, request, "password_reset_requested", email, 5, timedelta(hours=1))
+    user = db.scalar(select(User).where(User.email == email, User.is_active.is_(True)))
+    debug_token = None
+    if user:
+        raw = _issue_account_token(db, user, "reset_password")
+        url = f"{settings.public_app_url.rstrip('/')}/#/reset-password?token={raw}"
+        background_tasks.add_task(send_account_email, user.email, "Đặt lại mật khẩu Vision AI", url, "Đặt lại mật khẩu")
+        debug_token = _debug_token(raw)
+        record_security_event(db, request, "password_reset_requested", "success", user=user, identifier=email)
+    else:
+        record_security_event(db, request, "password_reset_requested", "success", identifier=email)
+    return TokenDispatchResponse(
+        message="Nếu email tồn tại, hướng dẫn đặt lại mật khẩu sẽ được gửi.",
+        debug_token=debug_token,
+    )
+
+
+@router.post("/reset-password", response_model=MessageResponse)
+def reset_password(payload: ResetPasswordRequest, request: Request, db: DbSession) -> MessageResponse:
+    _item, user = _consume_account_token(db, payload.token, "reset_password")
+    user.password_hash = password_hash.hash(payload.new_password)
+    db.execute(delete(UserSession).where(UserSession.user_id == user.id))
+    db.execute(delete(APIKey).where(APIKey.user_id == user.id))
+    db.commit()
+    record_security_event(db, request, "password_reset_completed", "success", user=user)
+    return MessageResponse(message="Đã đặt lại mật khẩu. Hãy đăng nhập lại trên các thiết bị.")
+
+
+@router.delete("/account", response_model=MessageResponse)
+def delete_account(
+    payload: DeleteAccountRequest,
+    request: Request,
+    response: Response,
+    user: SessionUser,
+    db: DbSession,
+) -> MessageResponse:
+    if not password_hash.verify(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Mật khẩu không đúng.")
+    if user.role == "owner":
+        owner_count = db.scalar(select(func.count(User.id)).where(User.role == "owner", User.is_active.is_(True))) or 0
+        user_count = db.scalar(select(func.count(User.id)).where(User.is_active.is_(True))) or 0
+        if owner_count <= 1 and user_count > 1:
+            raise HTTPException(status_code=409, detail="Hãy chuyển quyền Owner trước khi xóa tài khoản.")
+    stored_names = list(db.scalars(select(Scan.stored_name).where(Scan.user_id == user.id)).all())
+    for stored_name in stored_names:
+        try:
+            delete_image(stored_name)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="Không thể xóa hết ảnh trên kho lưu trữ; tài khoản chưa bị xóa.") from exc
+    db.delete(user)
+    db.commit()
+    clear_session_cookie(response, request)
+    return MessageResponse(message="Tài khoản và toàn bộ dữ liệu liên quan đã được xóa.")
 
 
 @router.get("/sessions", response_model=list[SessionResponse])

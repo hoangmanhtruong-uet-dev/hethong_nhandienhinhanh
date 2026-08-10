@@ -11,7 +11,6 @@ from fastapi.staticfiles import StaticFiles
 from .api import router
 from .auth import router as auth_router
 from .config import get_settings
-from .database import init_db
 
 
 settings = get_settings()
@@ -21,7 +20,6 @@ frontend_dist = Path(__file__).resolve().parents[2] / "dist"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
-    init_db()
     yield
 
 

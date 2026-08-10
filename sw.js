@@ -1,10 +1,10 @@
-const VERSION = 'vision-ai-v11';
+const VERSION = 'vision-ai-v12';
 const SHELL_CACHE = `${VERSION}-shell`;
 const STATIC_CACHE = `${VERSION}-static`;
 const APP_SHELL = [
   '/',
   '/style.css',
-  '/script.js?v=10',
+  '/script.js?v=12',
   '/yolo-runtime.js?v=2',
   '/manifest.webmanifest',
   '/assets/icons/icon-192.png',

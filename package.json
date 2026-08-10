@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "node --check script.js"
+    "check": "node --check script.js && node --check yolo-runtime.js",
+    "check:yolo": "node scripts/check-yolo.mjs"
   },
   "dependencies": {
     "onnxruntime-web": "1.27.0"

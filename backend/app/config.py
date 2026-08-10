@@ -14,6 +14,8 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 class Settings(BaseSettings):
     app_name: str = "Vision AI API"
+    environment: str = "development"
+    public_app_url: str = "http://localhost:8000"
     api_prefix: str = "/api"
     database_url: str = f"sqlite:///{(BACKEND_DIR / 'data' / 'vision_ai.db').as_posix()}"
     upload_dir: Path = BACKEND_DIR / "data" / "uploads"
@@ -29,6 +31,17 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("VISION_AI_CLOUDINARY_URL", "CLOUDINARY_URL"),
     )
     cloudinary_folder: str = "vision-ai"
+    require_cloudinary: bool = False
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str = "Vision AI <no-reply@vision-ai.local>"
+    smtp_starttls: bool = True
+    require_smtp: bool = False
+    resend_api_key: str | None = None
+    require_email_provider: bool = False
+    account_token_minutes: int = Field(default=30, ge=5, le=1440)
 
     model_config = SettingsConfigDict(
         env_file=BACKEND_DIR / ".env",

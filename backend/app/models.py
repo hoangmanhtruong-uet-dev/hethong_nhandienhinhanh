@@ -114,6 +114,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(20), default="member", index=True)
     two_factor_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     two_factor_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
@@ -179,3 +180,33 @@ class UserSettings(Base):
     local_processing_preferred: Mapped[bool] = mapped_column(Boolean, default=True)
     theme: Mapped[str] = mapped_column(String(20), default="dark")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class AccountToken(Base):
+    __tablename__ = "account_tokens"
+    __table_args__ = (UniqueConstraint("token_hash", name="uq_account_tokens_hash"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    purpose: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class ModelEvaluation(Base):
+    __tablename__ = "model_evaluations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    scan_id: Mapped[str | None] = mapped_column(ForeignKey("scans.id", ondelete="SET NULL"), nullable=True, index=True)
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    predicted_label: Mapped[str] = mapped_column(String(255), default="")
+    expected_label: Mapped[str] = mapped_column(String(255), default="", index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    memory_mb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True, index=True)
+    device: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)

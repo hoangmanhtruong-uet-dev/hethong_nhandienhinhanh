@@ -17,8 +17,14 @@ os.environ["VISION_AI_ENCRYPTION_KEY"] = "test-only-encryption-key-32-characters
 
 from fastapi.testclient import TestClient  # noqa: E402
 import pyotp  # noqa: E402
+from alembic import command  # noqa: E402
+from alembic.config import Config  # noqa: E402
 
 from app.main import app  # noqa: E402
+
+
+alembic_config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+command.upgrade(alembic_config, "head")
 
 
 def png_file() -> bytes:
@@ -51,7 +57,7 @@ def register(client: TestClient, email: str = "tester@example.com") -> dict:
         "email": email,
         "display_name": "Vision Tester",
         "password": "correct-horse-2026",
-    })
+    }, headers={"x-forwarded-for": f"test-{email}"})
     assert response.status_code == 201, response.text
     return response.json()["user"]
 
@@ -144,6 +150,9 @@ def test_accounts_cannot_access_each_others_data() -> None:
         assert user_b.delete(f"/api/scans/{scan_id}").status_code == 404
         assert user_b.post("/api/feedback", json={
             "scan_id": scan_id, "feedback_type": "confirm",
+        }).status_code == 404
+        assert user_b.post("/api/model-evaluations", json={
+            "scan_id": scan_id, "model_name": "forbidden", "predicted_label": "x",
         }).status_code == 404
 
         assert user_b.get(f"/api/collections/{collection_a_id}").status_code == 404
@@ -260,3 +269,70 @@ def test_login_rate_limit_blocks_repeated_failures() -> None:
         blocked = client.post("/api/auth/login", json=payload)
         assert blocked.status_code == 429
         assert blocked.headers["retry-after"] == "900"
+
+
+def test_readiness_and_model_evaluation_are_account_scoped() -> None:
+    with TestClient(app) as user_a, TestClient(app) as user_b:
+        ready = user_a.get("/api/health/ready")
+        assert ready.status_code == 200
+        assert ready.json()["status"] == "ready"
+        register(user_a, "metrics-a@example.com")
+        register(user_b, "metrics-b@example.com")
+        created = user_a.post("/api/model-evaluations", json={
+            "model_name": "YOLOv8n ONNX",
+            "predicted_label": "cat",
+            "expected_label": "cat",
+            "confidence": 0.91,
+            "latency_ms": 240,
+            "memory_mb": 128.5,
+            "device": {"platform": "test"},
+        })
+        assert created.status_code == 201, created.text
+        assert created.json()["correct"] is True
+        summary = user_a.get("/api/model-evaluations/summary").json()
+        assert summary[0]["accuracy"] == 1.0
+        assert user_b.get("/api/model-evaluations").json() == []
+
+
+def test_account_email_password_and_deletion_lifecycle() -> None:
+    with TestClient(app) as owner, TestClient(app) as client:
+        register(owner, "lifecycle-owner@example.com")
+        register(client, "lifecycle-user@example.com")
+
+        verification = client.post("/api/auth/email-verification/request")
+        assert verification.status_code == 200, verification.text
+        verification_token = verification.json()["debug_token"]
+        verified = client.post("/api/auth/email-verification/confirm", json={"token": verification_token})
+        assert verified.status_code == 200
+        assert verified.json()["email_verified_at"] is not None
+        assert client.post("/api/auth/email-verification/confirm", json={"token": verification_token}).status_code == 400
+
+        changed = client.post("/api/auth/change-password", json={
+            "current_password": "correct-horse-2026",
+            "new_password": "changed-horse-2026",
+        })
+        assert changed.status_code == 200, changed.text
+        assert client.post("/api/auth/logout").status_code == 200
+        assert client.post("/api/auth/login", json={
+            "email": "lifecycle-user@example.com", "password": "correct-horse-2026",
+        }).status_code == 401
+        assert client.post("/api/auth/login", json={
+            "email": "lifecycle-user@example.com", "password": "changed-horse-2026",
+        }).status_code == 200
+
+        forgot = client.post("/api/auth/forgot-password", json={"email": "lifecycle-user@example.com"})
+        reset_token = forgot.json()["debug_token"]
+        reset = client.post("/api/auth/reset-password", json={
+            "token": reset_token, "new_password": "reset-horse-2026",
+        })
+        assert reset.status_code == 200, reset.text
+        assert client.get("/api/auth/me").status_code == 401
+        assert client.post("/api/auth/login", json={
+            "email": "lifecycle-user@example.com", "password": "reset-horse-2026",
+        }).status_code == 200
+        create_scan(client)
+        deleted = client.request("DELETE", "/api/auth/account", json={
+            "password": "reset-horse-2026", "confirmation": "DELETE",
+        })
+        assert deleted.status_code == 200, deleted.text
+        assert client.get("/api/auth/me").status_code == 401

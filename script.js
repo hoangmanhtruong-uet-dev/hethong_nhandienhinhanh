@@ -9,7 +9,7 @@
   const API_ORIGIN = API_BASE.replace(/\/api$/, '');
   const MAX_FILE_BYTES = 15 * 1024 * 1024;
   const MAX_PIXELS = 20 * 1024 * 1024;
-  const PUBLIC_ROUTES = new Set(['onboarding', 'login', 'register', 'forgot-password', 'two-factor']);
+  const PUBLIC_ROUTES = new Set(['onboarding', 'login', 'register', 'forgot-password', 'reset-password', 'verify-email', 'two-factor']);
   const SCREENS = [
     ['onboarding', 'Chào mừng', 'waving_hand'],
     ['login', 'Đăng nhập', 'login'],
@@ -42,6 +42,8 @@
     ['empty', 'Trạng thái trống', 'inbox'],
     ['share', 'Chia sẻ & Xuất', 'ios_share'],
     ['delete-confirm', 'Xác nhận xóa', 'delete_forever'],
+    ['reset-password', 'Đặt lại mật khẩu', 'password'],
+    ['verify-email', 'Xác minh email', 'mark_email_read'],
   ];
   const PRODUCT_ROUTES = new Set([
     'scanner', 'history', 'collections', 'settings', 'account', 'security',
@@ -74,6 +76,8 @@
       yoloError: '',
       yoloFallback: false,
     },
+    modelStats: [],
+    modelStatsLoaded: false,
     analysisProgress: 12,
     backendOnline: null,
     authChecked: false,
@@ -274,6 +278,17 @@
       <div class="auth-footer"><a class="text-link" href="#/login">${icon('arrow_back')} Quay lại đăng nhập</a></div>`);
   }
 
+  function resetPasswordPage() {
+    const token = state.params.get('token') || '';
+    return authShell(`<div class="auth-heading"><div class="eyebrow">Account recovery</div><h1>Đặt lại mật khẩu</h1><p>Liên kết chỉ sử dụng được một lần và sẽ hết hạn theo cấu hình máy chủ.</p></div>
+      <form id="reset-password-form" class="stack auth-form"><input name="token" type="hidden" value="${esc(token)}"><div class="field"><label for="reset-password">Mật khẩu mới</label><input class="input" id="reset-password" name="new_password" type="password" autocomplete="new-password" minlength="10" required></div><div class="field"><label for="reset-confirm">Xác nhận mật khẩu</label><input class="input" id="reset-confirm" name="confirmation" type="password" autocomplete="new-password" minlength="10" required></div><button class="btn btn-primary btn-block" type="submit">${icon('password')} Đặt lại mật khẩu</button></form>`);
+  }
+
+  function verifyEmailPage() {
+    const token = state.params.get('token') || '';
+    return authShell(`<div class="auth-heading"><div class="eyebrow">Verified identity</div><h1>Xác minh email</h1><p>Nhấn xác nhận để hoàn tất liên kết email với tài khoản Vision AI.</p></div><form id="verify-email-form" class="stack auth-form"><input name="token" type="hidden" value="${esc(token)}"><button class="btn btn-primary btn-block" type="submit" ${token ? '' : 'disabled'}>${icon('mark_email_read')} Xác minh email</button></form>`);
+  }
+
   function twoFactorPage() {
     return authShell(`<div class="auth-heading"><div class="eyebrow">Bảo vệ tài khoản</div><h1>Xác minh 2 bước</h1><p>Nhập mã 6 số đang hiển thị trong ứng dụng Authenticator.</p></div>
       <form id="two-factor-login-form" class="stack auth-form"><div class="field"><label for="two-factor-code">Mã xác thực hoặc mã khôi phục</label><input class="input mono" id="two-factor-code" name="code" autocomplete="one-time-code" minlength="6" maxlength="20" required autofocus></div><button class="btn btn-primary btn-block" type="submit">${icon('verified_user')} Xác minh</button></form><p class="tiny muted" style="text-align:center">Mỗi mã khôi phục chỉ sử dụng được một lần.</p>
@@ -362,6 +377,17 @@
   }
 
   function accountPage() {
+    const accountUser = state.user || { display_name: 'Người dùng', email: '' };
+    const accountInitial = (accountUser.display_name || accountUser.email || 'V').trim().charAt(0).toUpperCase();
+    return shell(`<main class="page"><div class="profile-card"><div class="profile-avatar">${esc(accountInitial)}</div><div><div class="eyebrow">Tài khoản Vision AI</div><h2>${esc(accountUser.display_name)}</h2><p>${esc(accountUser.email)}</p><span class="tag ${accountUser.email_verified_at ? 'active' : ''}">${accountUser.email_verified_at ? 'Email đã xác minh' : 'Email chưa xác minh'}</span></div></div>
+      <div class="section-title"><span>Bảo mật tài khoản</span></div><div class="stack">
+        ${accountUser.email_verified_at ? '' : `<button class="setting-row" data-action="request-email-verification"><span class="setting-icon">${icon('mark_email_unread')}</span><span><strong>Xác minh email</strong><small>Gửi liên kết có thời hạn đến ${esc(accountUser.email)}</small></span>${icon('chevron_right')}</button>`}
+        <button class="setting-row" data-go="security"><span class="setting-icon">${icon('shield_lock')}</span><span><strong>Bảo mật & API</strong><small>2FA, phiên đăng nhập và khóa truy cập</small></span>${icon('chevron_right')}</button>
+      </div>
+      <form id="change-password-form" class="card stack" style="margin-top:16px"><h3>Đổi mật khẩu</h3><div class="field"><label>Mật khẩu hiện tại</label><input class="input" name="current_password" type="password" autocomplete="current-password" required></div><div class="field"><label>Mật khẩu mới</label><input class="input" name="new_password" type="password" autocomplete="new-password" minlength="10" required></div><button class="btn btn-primary btn-block" type="submit">Đổi mật khẩu</button></form>
+      <form id="delete-account-form" class="card stack" style="margin-top:16px;border-color:var(--danger)"><h3>Xóa tài khoản</h3><p class="tiny muted">Xóa vĩnh viễn lịch sử, bộ sưu tập, API key và ảnh Cloudinary. Nhập mật khẩu và chữ DELETE.</p><div class="field"><label>Mật khẩu</label><input class="input" name="password" type="password" required></div><div class="field"><label>Xác nhận</label><input class="input mono" name="confirmation" pattern="DELETE" placeholder="DELETE" required></div><button class="btn btn-danger btn-block" type="submit">${icon('delete_forever')} Xóa vĩnh viễn</button></form>
+      <button class="btn btn-danger btn-block" style="margin-top:22px" data-action="logout">${icon('logout')} Đăng xuất</button></main>`, { title: 'Tài khoản', back: true });
+    /* legacy account markup */
     const user = state.user || { display_name: 'Người dùng', email: '' };
     const initial = (user.display_name || user.email || 'V').trim().charAt(0).toUpperCase();
     return shell(`<main class="page"><div class="profile-card"><div class="profile-avatar">${esc(initial)}</div><div><div class="eyebrow">Tài khoản Vision AI</div><h2>${esc(user.display_name)}</h2><p>${esc(user.email)}</p></div></div>
@@ -425,6 +451,8 @@
         ${renderModelCard('coco','COCO-SSD Lite','Phát hiện nhiều vật thể và bounding box.',[['Kích thước','~5 MB'],['Runtime','WebGL'],['Loại','Detector']])}
         ${renderModelCard('yolo','YOLOv8 Nano ONNX','Phát hiện 80 loại vật thể với NMS chạy hoàn toàn trên thiết bị.',[['Kích thước','12.3 MB'],['Runtime',state.models.yoloProvider === 'none' ? 'ONNX' : state.models.yoloProvider.toUpperCase()],['Trạng thái',yoloStatus]])}
       </div>
+      <div class="card" style="margin-top:14px"><div class="row between"><div><strong>Đánh giá trên ảnh thật</strong><p class="tiny muted">Chạy cùng một ảnh qua YOLO và COCO-SSD, sau đó lưu độ chính xác, thời gian và RAM.</p></div><button class="btn btn-primary" data-action="pick-benchmark">${icon('science')} Chọn ảnh</button></div><input id="benchmark-file" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+        <div class="model-metrics" style="margin-top:12px">${state.modelStats.map(item => `<span><small>${esc(item.model_name)}</small><strong>${item.accuracy == null ? 'Chưa gán nhãn' : pct(item.accuracy)} · ${Math.round(item.average_latency_ms)} ms</strong></span>`).join('') || '<span><small>Chưa có dữ liệu</small><strong>Hãy chọn ảnh test đầu tiên</strong></span>'}</div></div>
       <div class="card" style="margin-top:14px"><p class="tiny muted">${deviceCopy}</p>${state.models.yoloError ? `<p class="tiny" style="color:var(--danger)">${esc(state.models.yoloError)}</p>` : ''}</div></main>`, { title: 'Trung tâm Mô hình AI', back: true });
     /* istanbul ignore next -- legacy markup kept below for a minimal UI migration */
     const modelCard = (id, name, copy, metrics, available = true) => `<button class="model-card ${p.active === id ? 'active' : ''}" data-model="${id}" ${available ? '' : 'disabled'}><div class="row between"><div><h3>${name}</h3><p>${copy}</p></div><span class="tag ${p.active === id ? 'active' : ''}">${p.active === id ? 'Đang dùng' : available ? 'Chọn' : 'Chưa cài'}</span></div><div class="model-metrics">${metrics.map(([label,value]) => `<span><small>${label}</small><strong>${value}</strong></span>`).join('')}</div></button>`;
@@ -508,6 +536,8 @@
       login: loginPage,
       register: registerPage,
       'forgot-password': forgotPasswordPage,
+      'reset-password': resetPasswordPage,
+      'verify-email': verifyEmailPage,
       'two-factor': twoFactorPage,
       'two-factor-setup': twoFactorSetupPage,
       'recovery-codes': recoveryCodesPage,
@@ -1258,7 +1288,69 @@
         body: JSON.stringify({ email: form.email.value.trim() })
       });
       toast(result.message);
+      if (result.debug_token) go('reset-password', { token: result.debug_token });
       form.reset();
+    } catch (error) { toast(error.message, 'error'); }
+  }
+
+  async function submitResetPassword(form) {
+    if (form.new_password.value !== form.confirmation.value) {
+      toast('Hai mật khẩu không khớp.', 'error');
+      return;
+    }
+    try {
+      const result = await api('/auth/reset-password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: form.token.value, new_password: form.new_password.value }),
+      });
+      toast(result.message);
+      go('login');
+    } catch (error) { toast(error.message, 'error'); }
+  }
+
+  async function submitVerifyEmail(form) {
+    try {
+      const user = await api('/auth/email-verification/confirm', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: form.token.value }),
+      });
+      state.user = user;
+      toast('Email đã được xác minh.');
+      try { state.user = await api('/auth/me'); go('account'); }
+      catch (_) { state.user = null; go('login'); }
+    } catch (error) { toast(error.message, 'error'); }
+  }
+
+  async function requestEmailVerification() {
+    try {
+      const result = await api('/auth/email-verification/request', { method: 'POST' });
+      toast(result.message);
+      if (result.debug_token) go('verify-email', { token: result.debug_token });
+    } catch (error) { toast(error.message, 'error'); }
+  }
+
+  async function submitChangePassword(form) {
+    try {
+      const result = await api('/auth/change-password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_password: form.current_password.value, new_password: form.new_password.value }),
+      });
+      form.reset();
+      toast(result.message);
+    } catch (error) { toast(error.message, 'error'); }
+  }
+
+  async function submitDeleteAccount(form) {
+    if (!window.confirm('Xóa tài khoản và toàn bộ ảnh vĩnh viễn?')) return;
+    try {
+      const result = await api('/auth/account', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: form.password.value, confirmation: form.confirmation.value }),
+      });
+      state.user = null;
+      localStorage.removeItem('vision-onboarded');
+      toast(result.message);
+      go('login');
     } catch (error) { toast(error.message, 'error'); }
   }
 
@@ -1390,6 +1482,68 @@
     render();
   }
 
+  async function loadModelStats(force = false) {
+    if (state.modelStatsLoaded && !force) return;
+    state.modelStatsLoaded = true;
+    try {
+      state.modelStats = await api('/model-evaluations/summary');
+      if (state.route === 'models') render();
+    } catch (_) { state.modelStatsLoaded = false; }
+  }
+
+  function loadImageFile(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const image = new Image();
+      image.onload = () => { URL.revokeObjectURL(url); resolve(image); };
+      image.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Ảnh không hợp lệ.')); };
+      image.src = url;
+    });
+  }
+
+  async function benchmarkModels(file) {
+    if (!file) return;
+    if (yoloDeviceAssessment().weak || state.modelPreferences.powerSave) {
+      toast('Tắt tiết kiệm pin hoặc dùng thiết bị mạnh hơn để benchmark YOLO.', 'error');
+      return;
+    }
+    toast('Đang chạy benchmark YOLO và COCO-SSD...');
+    try {
+      const image = await loadImageFile(file);
+      const canvas = document.createElement('canvas');
+      const scale = Math.min(1, 960 / Math.max(image.naturalWidth, image.naturalHeight));
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+      const expectedLabel = (window.prompt('Nhãn đúng của ảnh là gì? Ví dụ: person, cat, car') || '').trim();
+      const device = {
+        userAgent: navigator.userAgent.slice(0, 300),
+        cores: navigator.hardwareConcurrency || null,
+        memory: navigator.deviceMemory || null,
+      };
+      const detector = await ensureCocoDetector();
+      const cocoStarted = performance.now();
+      const coco = await detector.detect(canvas);
+      const cocoLatency = Math.round(performance.now() - cocoStarted);
+      const yoloReady = await ensureYoloLoaded({ force: true });
+      if (!yoloReady) throw new Error('YOLO không khởi tạo được trên thiết bị này.');
+      const yoloStarted = performance.now();
+      const yolo = await window.VisionYolo.detect(canvas, { threshold: state.modelPreferences.threshold, force: true });
+      const yoloLatency = Math.round(performance.now() - yoloStarted);
+      const memoryMb = performance.memory?.usedJSHeapSize ? performance.memory.usedJSHeapSize / 1024 / 1024 : null;
+      const payloads = [
+        { model_name: 'COCO-SSD Lite', predicted_label: coco.sort((a,b) => b.score-a.score)[0]?.class || '', confidence: coco[0]?.score || 0, latency_ms: cocoLatency },
+        { model_name: 'YOLOv8n ONNX', predicted_label: yolo.sort((a,b) => b.score-a.score)[0]?.class || '', confidence: yolo[0]?.score || 0, latency_ms: yoloLatency },
+      ];
+      await Promise.all(payloads.map(item => api('/model-evaluations', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...item, expected_label: expectedLabel, memory_mb: memoryMb, device }),
+      })));
+      await loadModelStats(true);
+      toast(`Đã lưu benchmark: COCO ${cocoLatency} ms · YOLO ${yoloLatency} ms.`);
+    } catch (error) { toast(error.message || 'Benchmark thất bại.', 'error'); }
+  }
+
   async function loadTeam() {
     try {
       state.teamMembers = await api('/auth/team');
@@ -1444,6 +1598,7 @@
       if (action === 'report-result') toast('Đã ghi nhận báo cáo nhận diện sai.');
       if (action === 'feedback') toast('Cảm ơn bạn! Kênh phản hồi đang được chuẩn bị.');
       if (action === 'logout') logout();
+      if (action === 'request-email-verification') requestEmailVerification();
       if (action === 'create-api-key') createApiKey();
       if (action === 'setup-2fa') startTwoFactorSetup();
       if (action === 'disable-2fa') disableTwoFactor();
@@ -1455,6 +1610,7 @@
       if (action === 'install-pwa') installPwa();
       if (action === 'apply-update') applyPwaUpdate();
       if (action === 'clear-pwa-cache') clearPwaCache();
+      if (action === 'pick-benchmark') document.getElementById('benchmark-file')?.click();
       if (action === 'sync-now') { const ok = await checkBackend(); await loadStorageEstimate(); toast(ok ? 'PostgreSQL và kho ảnh đang phản hồi.' : 'Backend chưa kết nối.', ok ? 'success' : 'error'); render(); }
       if (action === 'copy-summary') {
         if (!state.currentResult) toast('Không có kết quả để sao chép.', 'error');
@@ -1468,11 +1624,16 @@
       }
       event.stopPropagation();
     }));
-    document.querySelectorAll('input[type=file]').forEach(input => input.addEventListener('change', () => validateAndAnalyze(input.files?.[0])));
+    document.querySelectorAll('input[type=file]:not(#benchmark-file)').forEach(input => input.addEventListener('change', () => validateAndAnalyze(input.files?.[0])));
+    document.getElementById('benchmark-file')?.addEventListener('change', event => benchmarkModels(event.target.files?.[0]));
     document.getElementById('edit-result')?.addEventListener('submit', event => { event.preventDefault(); updateResult(event.currentTarget); });
     document.getElementById('login-form')?.addEventListener('submit', event => { event.preventDefault(); submitLogin(event.currentTarget); });
     document.getElementById('register-form')?.addEventListener('submit', event => { event.preventDefault(); submitRegister(event.currentTarget); });
     document.getElementById('forgot-form')?.addEventListener('submit', event => { event.preventDefault(); submitForgot(event.currentTarget); });
+    document.getElementById('reset-password-form')?.addEventListener('submit', event => { event.preventDefault(); submitResetPassword(event.currentTarget); });
+    document.getElementById('verify-email-form')?.addEventListener('submit', event => { event.preventDefault(); submitVerifyEmail(event.currentTarget); });
+    document.getElementById('change-password-form')?.addEventListener('submit', event => { event.preventDefault(); submitChangePassword(event.currentTarget); });
+    document.getElementById('delete-account-form')?.addEventListener('submit', event => { event.preventDefault(); submitDeleteAccount(event.currentTarget); });
     document.getElementById('two-factor-login-form')?.addEventListener('submit', event => { event.preventDefault(); submitTwoFactorLogin(event.currentTarget); });
     document.getElementById('two-factor-enable-form')?.addEventListener('submit', event => { event.preventDefault(); enableTwoFactor(event.currentTarget); });
     document.getElementById('power-save')?.addEventListener('change', event => {
@@ -1511,6 +1672,7 @@
     if (state.route === 'collection' && state.params.get('id') && state.selectedCollection?.id !== state.params.get('id')) openCollection(state.params.get('id'));
     if (state.route === 'privacy') loadPrivacy();
     if (state.route === 'security') loadSecurity();
+    if (state.route === 'models') loadModelStats();
     if (state.route === 'sync') { checkBackend().then(() => loadStorageEstimate()); }
     if (state.route === 'team') loadTeam();
     if (state.route === 'offline') checkBackend().then(() => render());

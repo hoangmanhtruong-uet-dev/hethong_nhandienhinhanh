@@ -26,7 +26,36 @@ class UserResponse(BaseModel):
     display_name: str
     role: str
     two_factor_enabled: bool
+    email_verified_at: datetime | None = None
     created_at: datetime
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=10, max_length=128)
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+    new_password: str = Field(min_length=10, max_length=128)
+
+
+class TokenRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+
+
+class TokenDispatchResponse(BaseModel):
+    message: str
+    debug_token: str | None = None
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
+    confirmation: Literal["DELETE"]
 
 
 class AuthResponse(BaseModel):
@@ -245,3 +274,40 @@ class PrivacySettingsResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+
+class ModelEvaluationCreate(BaseModel):
+    scan_id: str | None = None
+    model_name: str = Field(min_length=1, max_length=100)
+    predicted_label: str = Field(default="", max_length=255)
+    expected_label: str = Field(default="", max_length=255)
+    confidence: float = Field(default=0, ge=0, le=1)
+    latency_ms: int = Field(default=0, ge=0, le=3_600_000)
+    memory_mb: float | None = Field(default=None, ge=0, le=100_000)
+    device: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelEvaluationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    scan_id: str | None
+    model_name: str
+    predicted_label: str
+    expected_label: str
+    confidence: float
+    latency_ms: int
+    memory_mb: float | None
+    correct: bool | None
+    device: dict[str, Any]
+    created_at: datetime
+
+
+class ModelEvaluationSummary(BaseModel):
+    model_name: str
+    samples: int
+    labeled_samples: int
+    correct_samples: int
+    accuracy: float | None
+    average_latency_ms: float
+    average_memory_mb: float | None

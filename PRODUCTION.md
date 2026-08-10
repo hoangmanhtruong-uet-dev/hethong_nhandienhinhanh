@@ -38,3 +38,25 @@ docker compose --env-file .env.production -f compose.production.yml up -d --buil
 ```
 
 The browser service worker detects the new frontend build and offers the in-app update action.
+# Production release flow
+
+Schema changes are managed by Alembic and are never applied by FastAPI startup.
+
+```powershell
+cd backend
+alembic upgrade head
+```
+
+Render Free does not support pre-deploy commands. Add `VISION_AI_DATABASE_URL` and
+`VISION_AI_ENCRYPTION_KEY` to the GitHub `production` environment; the CI migration
+job upgrades Aiven after tests pass. Then set Render's health check path to
+`/api/health/ready` and Auto-Deploy to **After CI Checks Pass**. Paid Render services
+may instead use `cd backend && alembic upgrade head` as a pre-deploy command.
+
+Render Free blocks common SMTP ports, so account email defaults to the Resend HTTPS
+API via `VISION_AI_RESEND_API_KEY`. Set `VISION_AI_SMTP_FROM_EMAIL` to a verified
+sender and enable `VISION_AI_REQUIRE_EMAIL_PROVIDER` after configuration. SMTP remains
+available for a VPS or local environment.
+
+The Model Center benchmark stores per-user latency, optional browser memory and
+ground-truth accuracy at `/api/model-evaluations`. No benchmark image is uploaded.

@@ -14,8 +14,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import CurrentUser
+from .config import get_settings
 from .database import get_db
-from .models import Collection, CollectionItem, Feedback, Scan, User, UserSettings, utc_now
+from .models import Collection, CollectionItem, Feedback, ModelEvaluation, Scan, User, UserSettings, utc_now
 from .schemas import (
     AddScanRequest,
     CollectionCreate,
@@ -24,6 +25,9 @@ from .schemas import (
     FeedbackCreate,
     FeedbackResponse,
     MessageResponse,
+    ModelEvaluationCreate,
+    ModelEvaluationResponse,
+    ModelEvaluationSummary,
     PrivacySettingsResponse,
     PrivacySettingsUpdate,
     ScanCreate,
@@ -31,11 +35,12 @@ from .schemas import (
     ScanResponse,
     ScanUpdate,
 )
-from .storage import cloudinary_enabled, delete_image, image_delivery_url, image_path, save_image
+from .storage import cloudinary_enabled, configure_cloudinary, delete_image, image_delivery_url, image_path, save_image
 
 
 router = APIRouter()
 DbSession = Annotated[Session, Depends(get_db)]
+settings = get_settings()
 
 
 def get_scan_or_404(db: Session, scan_id: str, user_id: str) -> Scan:
@@ -108,6 +113,32 @@ def health(db: DbSession) -> dict:
         "database": db.bind.dialect.name if db.bind is not None else "connected",
         "storage": "cloudinary" if cloudinary_enabled() else "local",
     }
+
+
+@router.get("/health/ready", tags=["system"])
+def readiness(db: DbSession) -> dict:
+    checks: dict[str, dict[str, str]] = {}
+    try:
+        db.execute(select(1))
+        checks["database"] = {"status": "ok", "driver": db.bind.dialect.name if db.bind else "unknown"}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={"status": "not_ready", "database": type(exc).__name__}) from exc
+
+    try:
+        if cloudinary_enabled():
+            configure_cloudinary()
+            checks["storage"] = {"status": "ok", "provider": "cloudinary"}
+        elif settings.require_cloudinary:
+            raise RuntimeError("Cloudinary is required but VISION_AI_CLOUDINARY_URL is missing.")
+        else:
+            checks["storage"] = {"status": "ok", "provider": "local"}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={"status": "not_ready", "storage": str(exc)}) from exc
+    email_provider = "resend" if settings.resend_api_key else "smtp" if settings.smtp_host else "none"
+    if (settings.require_smtp and not settings.smtp_host) or (settings.require_email_provider and email_provider == "none"):
+        raise HTTPException(status_code=503, detail={"status": "not_ready", "email": "Email provider is required but not configured."})
+    checks["email"] = {"status": "ok" if email_provider != "none" else "optional", "provider": email_provider}
+    return {"status": "ready", "checks": checks}
 
 
 @router.post("/scans", response_model=ScanResponse, status_code=status.HTTP_201_CREATED, tags=["scans"])
@@ -369,9 +400,23 @@ def create_feedback(payload: FeedbackCreate, db: DbSession, user: CurrentUser) -
     scan = get_scan_or_404(db, payload.scan_id, user.id) if payload.scan_id else None
     feedback = Feedback(user_id=user.id, **payload.model_dump())
     if scan and payload.feedback_type == "confirm":
+        db.add(ModelEvaluation(
+            user_id=user.id, scan_id=scan.id, model_name=scan.model_version,
+            predicted_label=scan.primary_label, expected_label=scan.primary_label,
+            confidence=scan.confidence, latency_ms=scan.processing_time_ms, correct=True,
+            device={"source": "scan_feedback"},
+        ))
         scan.confirmed = True
     elif scan and payload.feedback_type == "incorrect_label" and payload.corrected_label.strip():
-        scan.primary_label = payload.corrected_label.strip()
+        corrected = payload.corrected_label.strip()
+        db.add(ModelEvaluation(
+            user_id=user.id, scan_id=scan.id, model_name=scan.model_version,
+            predicted_label=payload.original_label.strip() or scan.primary_label,
+            expected_label=corrected, confidence=scan.confidence,
+            latency_ms=scan.processing_time_ms, correct=False,
+            device={"source": "scan_feedback"},
+        ))
+        scan.primary_label = corrected
         scan.confirmed = True
     db.add(feedback)
     db.commit()
@@ -402,3 +447,58 @@ def update_privacy_settings(payload: PrivacySettingsUpdate, db: DbSession, user:
     db.commit()
     db.refresh(item)
     return item
+
+
+@router.post("/model-evaluations", response_model=ModelEvaluationResponse, status_code=201, tags=["models"])
+def create_model_evaluation(payload: ModelEvaluationCreate, db: DbSession, user: CurrentUser) -> ModelEvaluation:
+    if payload.scan_id:
+        get_scan_or_404(db, payload.scan_id, user.id)
+    expected = " ".join(payload.expected_label.split())
+    predicted = " ".join(payload.predicted_label.split())
+    item = ModelEvaluation(
+        user_id=user.id,
+        **payload.model_dump(exclude={"expected_label", "predicted_label"}),
+        expected_label=expected,
+        predicted_label=predicted,
+        correct=(predicted.casefold() == expected.casefold()) if expected else None,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.get("/model-evaluations", response_model=list[ModelEvaluationResponse], tags=["models"])
+def list_model_evaluations(
+    db: DbSession,
+    user: CurrentUser,
+    model_name: str | None = Query(default=None, max_length=100),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[ModelEvaluation]:
+    query = select(ModelEvaluation).where(ModelEvaluation.user_id == user.id)
+    if model_name:
+        query = query.where(ModelEvaluation.model_name == model_name)
+    return list(db.scalars(query.order_by(ModelEvaluation.created_at.desc()).limit(limit)).all())
+
+
+@router.get("/model-evaluations/summary", response_model=list[ModelEvaluationSummary], tags=["models"])
+def model_evaluation_summary(db: DbSession, user: CurrentUser) -> list[ModelEvaluationSummary]:
+    items = db.scalars(select(ModelEvaluation).where(ModelEvaluation.user_id == user.id)).all()
+    grouped: dict[str, list[ModelEvaluation]] = {}
+    for item in items:
+        grouped.setdefault(item.model_name, []).append(item)
+    result: list[ModelEvaluationSummary] = []
+    for name, samples in sorted(grouped.items()):
+        labeled = [item for item in samples if item.correct is not None]
+        memory = [item.memory_mb for item in samples if item.memory_mb is not None]
+        correct = sum(item.correct is True for item in labeled)
+        result.append(ModelEvaluationSummary(
+            model_name=name,
+            samples=len(samples),
+            labeled_samples=len(labeled),
+            correct_samples=correct,
+            accuracy=(correct / len(labeled)) if labeled else None,
+            average_latency_ms=sum(item.latency_ms for item in samples) / len(samples),
+            average_memory_mb=(sum(memory) / len(memory)) if memory else None,
+        ))
+    return result

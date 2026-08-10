@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: hethong-nhandienhinhanh
+    runtime: python
+    plan: free
+    buildCommand: npm ci && npm run build && pip install -r backend/requirements.txt
+    startCommand: cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"
+    healthCheckPath: /api/health/ready
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: NODE_VERSION
+        value: 22.18.0
+      - key: VISION_AI_ENVIRONMENT
+        value: production
+      - key: VISION_AI_DATABASE_URL
+        sync: false
+      - key: VISION_AI_CLOUDINARY_URL
+        sync: false
+      - key: VISION_AI_ENCRYPTION_KEY
+        sync: false
+      - key: VISION_AI_PUBLIC_APP_URL
+        sync: false
+      - key: VISION_AI_REQUIRE_CLOUDINARY
+        value: "true"
+      - key: VISION_AI_SMTP_HOST
+        sync: false
+      - key: VISION_AI_SMTP_USERNAME
+        sync: false
+      - key: VISION_AI_SMTP_PASSWORD
+        sync: false
+      - key: VISION_AI_SMTP_FROM_EMAIL
+        sync: false
+      - key: VISION_AI_RESEND_API_KEY
+        sync: false
+      - key: VISION_AI_REQUIRE_EMAIL_PROVIDER
+        value: "true"
