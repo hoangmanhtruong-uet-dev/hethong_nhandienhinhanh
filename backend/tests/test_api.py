@@ -63,6 +63,9 @@ def test_complete_mvp_flow() -> None:
         user = register(client)
         assert user["role"] == "owner"
         assert client.get("/api/auth/me").json()["id"] == user["id"]
+        events = client.get("/api/auth/security-events")
+        assert events.status_code == 200
+        assert any(item["event_type"] == "account_registered" for item in events.json())
         team = client.get("/api/auth/team")
         assert team.status_code == 200
         assert len(team.json()) == 1
@@ -202,3 +205,13 @@ def test_two_factor_authenticator_flow() -> None:
             "challenge_token": second_login["challenge_token"], "code": recovery_codes[0],
         })
         assert reused.status_code == 401
+
+
+def test_login_rate_limit_blocks_repeated_failures() -> None:
+    with TestClient(app) as client:
+        payload = {"email": "rate-limit@example.com", "password": "wrong-password"}
+        for _ in range(5):
+            assert client.post("/api/auth/login", json=payload).status_code == 401
+        blocked = client.post("/api/auth/login", json=payload)
+        assert blocked.status_code == 429
+        assert blocked.headers["retry-after"] == "900"

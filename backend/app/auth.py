@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .database import get_db
-from .models import APIKey, TwoFactorRecoveryCode, User, UserSession
+from .models import APIKey, SecurityEvent, TwoFactorRecoveryCode, User, UserSession
 from .schemas import (
     APIKeyCreate,
     APIKeyCreatedResponse,
@@ -29,6 +29,7 @@ from .schemas import (
     MessageResponse,
     RegisterRequest,
     SessionResponse,
+    SecurityEventResponse,
     TeamMemberResponse,
     TwoFactorDisableRequest,
     TwoFactorEnableRequest,
@@ -58,6 +59,63 @@ def digest(value: str) -> str:
 
 def normalize_email(email: str) -> str:
     return email.strip().casefold()
+
+
+def client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return (forwarded or (request.client.host if request.client else ""))[:80]
+
+
+def record_security_event(
+    db: Session,
+    request: Request,
+    event_type: str,
+    outcome: str,
+    user: User | None = None,
+    identifier: str = "",
+    details: dict | None = None,
+) -> None:
+    db.add(SecurityEvent(
+        user_id=user.id if user else None,
+        event_type=event_type,
+        outcome=outcome,
+        ip_address=client_ip(request),
+        identifier_hash=digest(identifier) if identifier else "",
+        user_agent=request.headers.get("user-agent", "")[:500],
+        details=details or {},
+    ))
+    db.commit()
+
+
+def enforce_rate_limit(
+    db: Session,
+    request: Request,
+    event_type: str,
+    identifier: str,
+    maximum: int,
+    window: timedelta,
+) -> None:
+    since = utc_now() - window
+    identifier_hash = digest(identifier) if identifier else ""
+    base_filters = [
+        SecurityEvent.event_type == event_type,
+        SecurityEvent.created_at >= since,
+    ]
+    if event_type != "registration_attempt":
+        base_filters.append(SecurityEvent.outcome == "failure")
+    ip_address = client_ip(request)
+    scoped_attempts = db.scalar(select(func.count(SecurityEvent.id)).where(
+        *base_filters, SecurityEvent.ip_address == ip_address, SecurityEvent.identifier_hash == identifier_hash,
+    )) or 0
+    ip_attempts = db.scalar(select(func.count(SecurityEvent.id)).where(
+        *base_filters, SecurityEvent.ip_address == ip_address,
+    )) or 0
+    identifier_attempts = db.scalar(select(func.count(SecurityEvent.id)).where(
+        *base_filters, SecurityEvent.identifier_hash == identifier_hash,
+    )) or 0
+    if scoped_attempts >= maximum or ip_attempts >= maximum * 4 or identifier_attempts >= maximum * 2:
+        record_security_event(db, request, "rate_limit_blocked", "blocked", identifier=identifier, details={"scope": event_type})
+        raise HTTPException(status_code=429, detail="Quá nhiều lần thử. Vui lòng đợi rồi thử lại.", headers={"Retry-After": str(int(window.total_seconds()))})
 
 
 def _fernet() -> Fernet:
@@ -230,7 +288,9 @@ AdminUser = Annotated[User, Depends(require_admin)]
 @router.post("/register", response_model=AuthResponse, status_code=201)
 def register(payload: RegisterRequest, request: Request, response: Response, db: DbSession) -> AuthResponse:
     email = normalize_email(str(payload.email))
+    enforce_rate_limit(db, request, "registration_attempt", client_ip(request), 5, timedelta(hours=1))
     if db.scalar(select(User.id).where(User.email == email)):
+        record_security_event(db, request, "registration_attempt", "failure", identifier=client_ip(request), details={"reason": "email_exists"})
         raise HTTPException(status_code=409, detail="Email này đã được sử dụng.")
     first_account = (db.scalar(select(func.count(User.id))) or 0) == 0
     user = User(
@@ -244,19 +304,26 @@ def register(payload: RegisterRequest, request: Request, response: Response, db:
     db.refresh(user)
     token, _session, max_age = create_session(db, request, user, remember=True)
     set_session_cookie(response, request, token, max_age)
+    record_security_event(db, request, "account_registered", "success", user=user)
+    record_security_event(db, request, "registration_attempt", "success", user=user, identifier=client_ip(request))
     return AuthResponse(user=UserResponse.model_validate(user))
 
 
 @router.post("/login", response_model=AuthResponse)
 def login(payload: LoginRequest, request: Request, response: Response, db: DbSession) -> AuthResponse:
-    user = db.scalar(select(User).where(User.email == normalize_email(str(payload.email))))
+    email = normalize_email(str(payload.email))
+    enforce_rate_limit(db, request, "login_failure", email, 5, timedelta(minutes=15))
+    user = db.scalar(select(User).where(User.email == email))
     if user is None or not password_hash.verify(payload.password, user.password_hash) or not user.is_active:
+        record_security_event(db, request, "login_failure", "failure", user=user, identifier=email, details={"reason": "invalid_credentials"})
         raise HTTPException(status_code=401, detail="Email hoặc mật khẩu không đúng.")
     if user.two_factor_enabled:
         challenge = _seal({"purpose": "login", "user_id": user.id, "remember": payload.remember})
+        record_security_event(db, request, "login_password_verified", "success", user=user)
         return AuthResponse(requires_2fa=True, challenge_token=challenge)
     token, _session, max_age = create_session(db, request, user, payload.remember)
     set_session_cookie(response, request, token, max_age)
+    record_security_event(db, request, "login_success", "success", user=user)
     return AuthResponse(user=UserResponse.model_validate(user))
 
 
@@ -275,7 +342,7 @@ def setup_two_factor(user: SessionUser) -> TwoFactorSetupResponse:
 
 
 @router.post("/2fa/enable", response_model=TwoFactorEnableResponse)
-def enable_two_factor(payload: TwoFactorEnableRequest, user: SessionUser, db: DbSession) -> TwoFactorEnableResponse:
+def enable_two_factor(payload: TwoFactorEnableRequest, request: Request, user: SessionUser, db: DbSession) -> TwoFactorEnableResponse:
     setup = _open(payload.setup_token)
     if setup.get("purpose") != "setup" or setup.get("user_id") != user.id:
         raise HTTPException(status_code=401, detail="Phiên thiết lập 2FA không hợp lệ.")
@@ -287,6 +354,7 @@ def enable_two_factor(payload: TwoFactorEnableRequest, user: SessionUser, db: Db
     recovery_codes = _new_recovery_codes(db, user)
     db.commit()
     db.refresh(user)
+    record_security_event(db, request, "two_factor_enabled", "success", user=user)
     return TwoFactorEnableResponse(user=UserResponse.model_validate(user), recovery_codes=recovery_codes)
 
 
@@ -298,15 +366,21 @@ def verify_two_factor_login(payload: TwoFactorLoginRequest, request: Request, re
     user = db.get(User, challenge.get("user_id"))
     if user is None or not user.is_active or not user.two_factor_enabled:
         raise HTTPException(status_code=401, detail="Tài khoản không hợp lệ.")
-    if not _totp_valid(_decrypt_user_secret(user), payload.code) and not _consume_recovery_code(db, user, payload.code):
+    enforce_rate_limit(db, request, "two_factor_failure", user.id, 5, timedelta(minutes=10))
+    used_recovery_code = False
+    if not _totp_valid(_decrypt_user_secret(user), payload.code):
+        used_recovery_code = _consume_recovery_code(db, user, payload.code)
+    if not _totp_valid(_decrypt_user_secret(user), payload.code) and not used_recovery_code:
+        record_security_event(db, request, "two_factor_failure", "failure", user=user, identifier=user.id)
         raise HTTPException(status_code=401, detail="Mã Authenticator hoặc mã khôi phục không đúng.")
     token, _session, max_age = create_session(db, request, user, bool(challenge.get("remember")))
     set_session_cookie(response, request, token, max_age)
+    record_security_event(db, request, "recovery_code_used" if used_recovery_code else "login_success", "success", user=user)
     return AuthResponse(user=UserResponse.model_validate(user))
 
 
 @router.post("/2fa/disable", response_model=UserResponse)
-def disable_two_factor(payload: TwoFactorDisableRequest, user: SessionUser, db: DbSession) -> User:
+def disable_two_factor(payload: TwoFactorDisableRequest, request: Request, user: SessionUser, db: DbSession) -> User:
     if not password_hash.verify(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Mật khẩu không đúng.")
     if not _totp_valid(_decrypt_user_secret(user), payload.code):
@@ -316,11 +390,12 @@ def disable_two_factor(payload: TwoFactorDisableRequest, user: SessionUser, db: 
     db.execute(delete(TwoFactorRecoveryCode).where(TwoFactorRecoveryCode.user_id == user.id))
     db.commit()
     db.refresh(user)
+    record_security_event(db, request, "two_factor_disabled", "success", user=user)
     return user
 
 
 @router.post("/2fa/recovery-codes/regenerate", response_model=TwoFactorRecoveryCodesResponse)
-def regenerate_recovery_codes(payload: TwoFactorRecoveryRegenerateRequest, user: SessionUser, db: DbSession) -> TwoFactorRecoveryCodesResponse:
+def regenerate_recovery_codes(payload: TwoFactorRecoveryRegenerateRequest, request: Request, user: SessionUser, db: DbSession) -> TwoFactorRecoveryCodesResponse:
     if not user.two_factor_enabled:
         raise HTTPException(status_code=409, detail="Tài khoản chưa bật 2FA.")
     if not password_hash.verify(payload.password, user.password_hash):
@@ -329,6 +404,7 @@ def regenerate_recovery_codes(payload: TwoFactorRecoveryRegenerateRequest, user:
         raise HTTPException(status_code=400, detail="Mã Authenticator không đúng.")
     recovery_codes = _new_recovery_codes(db, user)
     db.commit()
+    record_security_event(db, request, "recovery_codes_regenerated", "success", user=user)
     return TwoFactorRecoveryCodesResponse(recovery_codes=recovery_codes)
 
 
@@ -370,6 +446,16 @@ def list_sessions(
         created_at=item.created_at, last_seen_at=item.last_seen_at, expires_at=item.expires_at,
         current=item.token_hash == current_hash,
     ) for item in sessions]
+
+
+@router.get("/security-events", response_model=list[SecurityEventResponse])
+def list_security_events(user: SessionUser, db: DbSession) -> list[SecurityEvent]:
+    return list(db.scalars(
+        select(SecurityEvent)
+        .where(SecurityEvent.user_id == user.id)
+        .order_by(SecurityEvent.created_at.desc())
+        .limit(50)
+    ).all())
 
 
 @router.delete("/sessions/{session_id}", response_model=MessageResponse)

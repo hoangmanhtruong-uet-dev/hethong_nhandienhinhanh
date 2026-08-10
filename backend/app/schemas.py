@@ -80,6 +80,17 @@ class SessionResponse(BaseModel):
     current: bool = False
 
 
+class SecurityEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    event_type: str
+    outcome: str
+    ip_address: str
+    details: dict[str, Any]
+    created_at: datetime
+
+
 class APIKeyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 

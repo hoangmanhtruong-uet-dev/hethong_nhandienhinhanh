@@ -141,6 +141,20 @@ class TwoFactorRecoveryCode(Base):
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
+class SecurityEvent(Base):
+    __tablename__ = "security_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(60), index=True)
+    outcome: Mapped[str] = mapped_column(String(20), index=True)
+    ip_address: Mapped[str] = mapped_column(String(80), default="", index=True)
+    identifier_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    user_agent: Mapped[str] = mapped_column(String(500), default="")
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
 class APIKey(Base):
     __tablename__ = "api_keys"
 

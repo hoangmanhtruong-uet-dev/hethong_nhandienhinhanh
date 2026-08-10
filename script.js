@@ -71,6 +71,7 @@
     user: null,
     sessions: [],
     apiKeys: [],
+    securityEvents: [],
     teamMembers: [],
     twoFactorChallenge: '',
     twoFactorSetup: null,
@@ -360,10 +361,13 @@
   function securityPage() {
     const keys = state.apiKeys.map(item => `<div class="security-item"><span class="setting-icon">${icon('key')}</span><span><strong>${esc(item.name)}</strong><small class="mono">${esc(item.prefix)}••••••••</small></span><button class="icon-btn" data-revoke-key="${item.id}" aria-label="Thu hồi API key">${icon('delete')}</button></div>`).join('') || `<p class="empty-copy">Chưa có API key nào. Chỉ tạo key khi cần tích hợp ứng dụng khác.</p>`;
     const sessions = state.sessions.map(item => `<div class="security-item"><span class="setting-icon">${icon(item.user_agent?.toLowerCase().includes('mobile') ? 'smartphone' : 'computer')}</span><span><strong>${item.current ? 'Thiết bị hiện tại' : 'Thiết bị đã đăng nhập'}</strong><small>${esc(item.ip_address || 'IP ẩn')} · ${formatDate(item.last_seen_at)}</small></span>${item.current ? '<span class="tag active">Hiện tại</span>' : `<button class="icon-btn" data-revoke-session="${item.id}" aria-label="Đăng xuất thiết bị">${icon('logout')}</button>`}</div>`).join('') || `<p class="empty-copy">Không có phiên đăng nhập hoạt động.</p>`;
+    const eventLabels = { account_registered: 'Tạo tài khoản', login_success: 'Đăng nhập thành công', login_password_verified: 'Mật khẩu hợp lệ, chờ 2FA', login_failure: 'Đăng nhập thất bại', two_factor_failure: 'Sai mã 2FA', two_factor_enabled: 'Đã bật 2FA', two_factor_disabled: 'Đã tắt 2FA', recovery_code_used: 'Đã dùng mã khôi phục', recovery_codes_regenerated: 'Đã tạo lại mã khôi phục', rate_limit_blocked: 'Đã chặn do quá nhiều yêu cầu' };
+    const events = state.securityEvents.slice(0, 12).map(item => `<div class="security-item"><span class="setting-icon">${icon(item.outcome === 'success' ? 'check_circle' : item.outcome === 'blocked' ? 'block' : 'warning')}</span><span><strong>${esc(eventLabels[item.event_type] || item.event_type)}</strong><small>${esc(item.ip_address || 'IP ẩn')} · ${formatDate(item.created_at)}</small></span><span class="tag ${item.outcome === 'success' ? 'active' : ''}">${esc(item.outcome)}</span></div>`).join('') || `<p class="empty-copy">Chưa có hoạt động bảo mật.</p>`;
     return shell(`<main class="page security-page"><div class="eyebrow">Security control center</div><h1 class="hero-title">Bảo mật & API</h1><p class="lead">Quản lý quyền truy cập và thiết bị đã đăng nhập.</p>
       <div class="security-card accent"><div class="row between"><div><h3>${icon('key')} Quản lý API Key</h3><p>Key chỉ hiện đầy đủ đúng một lần.</p></div><button class="btn btn-primary" data-action="create-api-key">${icon('add')} Tạo key</button></div>${state.newApiKey ? `<div class="new-key"><small>API KEY MỚI — hãy lưu ngay</small><code>${esc(state.newApiKey)}</code><button class="btn btn-ghost btn-block" data-action="copy-api-key">${icon('content_copy')} Sao chép</button></div>` : ''}<div class="stack">${keys}</div></div>
       <div class="security-card"><h3>${icon('verified_user')} Cài đặt bảo mật</h3><div class="security-status"><span>${icon('cookie')} Session HttpOnly</span><span class="tag active">Đang bật</span></div><div class="security-status"><span>${icon('https')} Mã hóa khi dùng HTTPS</span><span class="tag active">Đang bật</span></div><div class="security-status"><span>${icon('password')} Xác thực hai lớp (2FA)</span><button class="btn ${state.user?.two_factor_enabled ? 'btn-danger' : 'btn-primary'}" data-action="${state.user?.two_factor_enabled ? 'disable-2fa' : 'setup-2fa'}">${state.user?.two_factor_enabled ? 'Tắt 2FA' : 'Thiết lập'}</button></div>${state.user?.two_factor_enabled ? `<button class="btn btn-ghost btn-block" data-action="regenerate-recovery-codes">${icon('key')} Tạo lại mã khôi phục</button>` : ''}</div>
       <div class="security-card"><h3>${icon('devices')} Thiết bị đã đăng nhập</h3><div class="stack">${sessions}</div></div>
+      <div class="security-card"><h3>${icon('policy')} Nhật ký bảo mật</h3><div class="stack">${events}</div></div>
       ${['owner','admin'].includes(state.user?.role) ? `<button class="btn btn-ghost btn-block" data-go="team">${icon('groups')} Quản lý nhóm & phân quyền</button>` : ''}
     </main>`, { title: 'Bảo mật & API', back: true });
   }
@@ -1077,6 +1081,7 @@
     state.user = null;
     state.sessions = [];
     state.apiKeys = [];
+    state.securityEvents = [];
     state.currentResult = null;
     toast('Đã đăng xuất.');
     go('login');
@@ -1084,7 +1089,7 @@
 
   async function loadSecurity() {
     try {
-      [state.sessions, state.apiKeys] = await Promise.all([api('/auth/sessions'), api('/auth/api-keys')]);
+      [state.sessions, state.apiKeys, state.securityEvents] = await Promise.all([api('/auth/sessions'), api('/auth/api-keys'), api('/auth/security-events')]);
       if (state.route === 'security') render();
     } catch (error) {
       if (error.status === 401) { state.user = null; go('login'); }

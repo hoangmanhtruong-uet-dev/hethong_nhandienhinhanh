@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from datetime import timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from .auth import CurrentUser
 from .database import get_db
-from .models import Collection, CollectionItem, Feedback, Scan, User, UserSettings
+from .models import Collection, CollectionItem, Feedback, Scan, User, UserSettings, utc_now
 from .schemas import (
     AddScanRequest,
     CollectionCreate,
@@ -113,6 +114,13 @@ async def create_scan(
     file: Annotated[UploadFile, File(description="JPEG, PNG hoặc WebP; tối đa 15 MB")],
     metadata: Annotated[str, Form(description="JSON theo schema ScanCreate")],
 ) -> ScanResponse:
+    recent_scans = db.scalar(select(func.count(Scan.id)).where(
+        Scan.user_id == user.id,
+        Scan.created_at >= utc_now() - timedelta(hours=1),
+    )) or 0
+    if recent_scans >= 60:
+        raise HTTPException(status_code=429, detail="Bạn đã đạt giới hạn 60 lượt lưu ảnh mỗi giờ.", headers={"Retry-After": "3600"})
+
     try:
         payload = ScanCreate.model_validate_json(metadata)
     except ValidationError as exc:
