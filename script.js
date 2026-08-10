@@ -17,6 +17,7 @@
     ['forgot-password', 'Quên mật khẩu', 'key'],
     ['two-factor', 'Xác minh 2FA', 'password'],
     ['two-factor-setup', 'Thiết lập 2FA', 'qr_code_2'],
+    ['recovery-codes', 'Mã khôi phục', 'key'],
     ['permissions', 'Cấp quyền Camera', 'photo_camera'],
     ['scanner', 'Scanner AI', 'document_scanner'],
     ['processing', 'Đang xử lý AI', 'neurology'],
@@ -73,6 +74,7 @@
     teamMembers: [],
     twoFactorChallenge: '',
     twoFactorSetup: null,
+    recoveryCodes: [],
     newApiKey: '',
     system: { database: 'unknown', storage: 'unknown' },
     storageEstimate: { usage: 0, quota: 0 },
@@ -264,7 +266,7 @@
 
   function twoFactorPage() {
     return authShell(`<div class="auth-heading"><div class="eyebrow">Bảo vệ tài khoản</div><h1>Xác minh 2 bước</h1><p>Nhập mã 6 số đang hiển thị trong ứng dụng Authenticator.</p></div>
-      <form id="two-factor-login-form" class="stack auth-form"><div class="field"><label for="two-factor-code">Mã xác thực</label><input class="input mono" id="two-factor-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required autofocus></div><button class="btn btn-primary btn-block" type="submit">${icon('verified_user')} Xác minh</button></form>
+      <form id="two-factor-login-form" class="stack auth-form"><div class="field"><label for="two-factor-code">Mã xác thực hoặc mã khôi phục</label><input class="input mono" id="two-factor-code" name="code" autocomplete="one-time-code" minlength="6" maxlength="20" required autofocus></div><button class="btn btn-primary btn-block" type="submit">${icon('verified_user')} Xác minh</button></form><p class="tiny muted" style="text-align:center">Mỗi mã khôi phục chỉ sử dụng được một lần.</p>
       <div class="auth-footer"><a class="text-link" href="#/login">${icon('arrow_back')} Quay lại đăng nhập</a></div>`);
   }
 
@@ -273,6 +275,11 @@
     if (!setup) return shell(`<main class="page"><div class="state-page"><div class="processing-orb">${icon('qr_code_2')}</div><h2>Đang tạo khóa bảo mật...</h2></div></main>`, { title: 'Thiết lập 2FA', back: true });
     return shell(`<main class="page"><div class="card" style="text-align:center"><div class="eyebrow">Authenticator</div><h2>Quét mã QR</h2><p class="lead">Dùng Google Authenticator, Microsoft Authenticator hoặc Authy.</p><img src="${esc(setup.qr_data_url)}" alt="Mã QR thiết lập 2FA" style="width:220px;max-width:100%;background:#fff;padding:12px;border-radius:16px"><p class="tiny muted">Không quét được? Nhập khóa thủ công:</p><code class="new-key" style="display:block;word-break:break-all">${esc(setup.secret)}</code></div>
       <form id="two-factor-enable-form" class="stack" style="margin-top:16px"><div class="field"><label for="two-factor-enable-code">Mã xác minh 6 số</label><input class="input mono" id="two-factor-enable-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></div><button class="btn btn-primary btn-block" type="submit">${icon('shield_lock')} Bật xác thực 2 lớp</button></form></main>`, { title: 'Thiết lập 2FA', back: true });
+  }
+
+  function recoveryCodesPage() {
+    if (!state.recoveryCodes.length) return noResultPage('Không có mã khôi phục mới');
+    return shell(`<main class="page"><div class="card"><div class="eyebrow">Chỉ hiển thị một lần</div><h2>Lưu mã khôi phục</h2><p class="lead">Mỗi mã dùng được một lần khi bạn không còn truy cập Authenticator. Hãy lưu ở nơi an toàn.</p><div class="recovery-grid">${state.recoveryCodes.map(code => `<code>${esc(code)}</code>`).join('')}</div></div><div class="button-grid" style="margin-top:16px"><button class="btn btn-primary" data-action="copy-recovery-codes">${icon('content_copy')} Sao chép</button><button class="btn btn-secondary" data-action="download-recovery-codes">${icon('download')} Tải tệp</button></div><button class="btn btn-ghost btn-block" style="margin-top:10px" data-action="finish-recovery-codes">Tôi đã lưu mã</button></main>`, { title: 'Mã khôi phục', back: false });
   }
 
   function permissionsPage() {
@@ -355,7 +362,7 @@
     const sessions = state.sessions.map(item => `<div class="security-item"><span class="setting-icon">${icon(item.user_agent?.toLowerCase().includes('mobile') ? 'smartphone' : 'computer')}</span><span><strong>${item.current ? 'Thiết bị hiện tại' : 'Thiết bị đã đăng nhập'}</strong><small>${esc(item.ip_address || 'IP ẩn')} · ${formatDate(item.last_seen_at)}</small></span>${item.current ? '<span class="tag active">Hiện tại</span>' : `<button class="icon-btn" data-revoke-session="${item.id}" aria-label="Đăng xuất thiết bị">${icon('logout')}</button>`}</div>`).join('') || `<p class="empty-copy">Không có phiên đăng nhập hoạt động.</p>`;
     return shell(`<main class="page security-page"><div class="eyebrow">Security control center</div><h1 class="hero-title">Bảo mật & API</h1><p class="lead">Quản lý quyền truy cập và thiết bị đã đăng nhập.</p>
       <div class="security-card accent"><div class="row between"><div><h3>${icon('key')} Quản lý API Key</h3><p>Key chỉ hiện đầy đủ đúng một lần.</p></div><button class="btn btn-primary" data-action="create-api-key">${icon('add')} Tạo key</button></div>${state.newApiKey ? `<div class="new-key"><small>API KEY MỚI — hãy lưu ngay</small><code>${esc(state.newApiKey)}</code><button class="btn btn-ghost btn-block" data-action="copy-api-key">${icon('content_copy')} Sao chép</button></div>` : ''}<div class="stack">${keys}</div></div>
-      <div class="security-card"><h3>${icon('verified_user')} Cài đặt bảo mật</h3><div class="security-status"><span>${icon('cookie')} Session HttpOnly</span><span class="tag active">Đang bật</span></div><div class="security-status"><span>${icon('https')} Mã hóa khi dùng HTTPS</span><span class="tag active">Đang bật</span></div><div class="security-status"><span>${icon('password')} Xác thực hai lớp (2FA)</span><button class="btn ${state.user?.two_factor_enabled ? 'btn-danger' : 'btn-primary'}" data-action="${state.user?.two_factor_enabled ? 'disable-2fa' : 'setup-2fa'}">${state.user?.two_factor_enabled ? 'Tắt 2FA' : 'Thiết lập'}</button></div></div>
+      <div class="security-card"><h3>${icon('verified_user')} Cài đặt bảo mật</h3><div class="security-status"><span>${icon('cookie')} Session HttpOnly</span><span class="tag active">Đang bật</span></div><div class="security-status"><span>${icon('https')} Mã hóa khi dùng HTTPS</span><span class="tag active">Đang bật</span></div><div class="security-status"><span>${icon('password')} Xác thực hai lớp (2FA)</span><button class="btn ${state.user?.two_factor_enabled ? 'btn-danger' : 'btn-primary'}" data-action="${state.user?.two_factor_enabled ? 'disable-2fa' : 'setup-2fa'}">${state.user?.two_factor_enabled ? 'Tắt 2FA' : 'Thiết lập'}</button></div>${state.user?.two_factor_enabled ? `<button class="btn btn-ghost btn-block" data-action="regenerate-recovery-codes">${icon('key')} Tạo lại mã khôi phục</button>` : ''}</div>
       <div class="security-card"><h3>${icon('devices')} Thiết bị đã đăng nhập</h3><div class="stack">${sessions}</div></div>
       ${['owner','admin'].includes(state.user?.role) ? `<button class="btn btn-ghost btn-block" data-go="team">${icon('groups')} Quản lý nhóm & phân quyền</button>` : ''}
     </main>`, { title: 'Bảo mật & API', back: true });
@@ -465,6 +472,7 @@
       'forgot-password': forgotPasswordPage,
       'two-factor': twoFactorPage,
       'two-factor-setup': twoFactorSetupPage,
+      'recovery-codes': recoveryCodesPage,
       permissions: permissionsPage,
       scanner: scannerPage,
       processing: processingPage,
@@ -979,13 +987,15 @@
 
   async function enableTwoFactor(form) {
     try {
-      state.user = await api('/auth/2fa/enable', {
+      const result = await api('/auth/2fa/enable', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ setup_token: state.twoFactorSetup.setup_token, code: form.code.value.trim() })
       });
+      state.user = result.user;
+      state.recoveryCodes = result.recovery_codes;
       state.twoFactorSetup = null;
       toast('Đã bật xác thực hai lớp.');
-      go('security');
+      go('recovery-codes');
     } catch (error) { toast(error.message, 'error'); }
   }
 
@@ -1002,6 +1012,34 @@
       toast('Đã tắt xác thực hai lớp.');
       render();
     } catch (error) { toast(error.message, 'error'); }
+  }
+
+  async function regenerateRecoveryCodes() {
+    const password = prompt('Nhập mật khẩu hiện tại:');
+    if (!password) return;
+    const code = prompt('Nhập mã 6 số từ Authenticator:');
+    if (!/^\d{6}$/.test(code || '')) return toast('Mã Authenticator phải có 6 số.', 'error');
+    try {
+      const result = await api('/auth/2fa/recovery-codes/regenerate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password, code })
+      });
+      state.recoveryCodes = result.recovery_codes;
+      go('recovery-codes');
+    } catch (error) { toast(error.message, 'error'); }
+  }
+
+  function recoveryCodesText() {
+    return `VISION AI - MÃ KHÔI PHỤC 2FA\n${state.user?.email || ''}\n\n${state.recoveryCodes.join('\n')}\n\nMỗi mã chỉ sử dụng được một lần.`;
+  }
+
+  function downloadRecoveryCodes() {
+    const blob = new Blob([recoveryCodesText()], { type: 'text/plain;charset=utf-8' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'vision-ai-recovery-codes.txt';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   }
 
   async function submitRegister(form) {
@@ -1197,6 +1235,10 @@
       if (action === 'create-api-key') createApiKey();
       if (action === 'setup-2fa') startTwoFactorSetup();
       if (action === 'disable-2fa') disableTwoFactor();
+      if (action === 'regenerate-recovery-codes') regenerateRecoveryCodes();
+      if (action === 'copy-recovery-codes') { navigator.clipboard?.writeText(recoveryCodesText()); toast('Đã sao chép mã khôi phục.'); }
+      if (action === 'download-recovery-codes') downloadRecoveryCodes();
+      if (action === 'finish-recovery-codes') { state.recoveryCodes = []; go('security'); }
       if (action === 'copy-api-key') { navigator.clipboard?.writeText(state.newApiKey); toast('Đã sao chép API key.'); }
       if (action === 'install-pwa') installPwa();
       if (action === 'apply-update') applyPwaUpdate();

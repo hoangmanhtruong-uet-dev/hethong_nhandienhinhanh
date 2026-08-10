@@ -36,7 +36,7 @@ class AuthResponse(BaseModel):
 
 
 class TwoFactorCodeRequest(BaseModel):
-    code: str = Field(pattern=r"^\d{6}$")
+    code: str = Field(min_length=6, max_length=20)
 
 
 class TwoFactorLoginRequest(TwoFactorCodeRequest):
@@ -51,10 +51,23 @@ class TwoFactorDisableRequest(TwoFactorCodeRequest):
     password: str = Field(min_length=1, max_length=128)
 
 
+class TwoFactorRecoveryRegenerateRequest(TwoFactorCodeRequest):
+    password: str = Field(min_length=1, max_length=128)
+
+
 class TwoFactorSetupResponse(BaseModel):
     setup_token: str
     secret: str
     qr_data_url: str
+
+
+class TwoFactorEnableResponse(BaseModel):
+    user: UserResponse
+    recovery_codes: list[str]
+
+
+class TwoFactorRecoveryCodesResponse(BaseModel):
+    recovery_codes: list[str]
 
 
 class SessionResponse(BaseModel):

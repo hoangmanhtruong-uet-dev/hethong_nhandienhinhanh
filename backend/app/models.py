@@ -131,6 +131,16 @@ class UserSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class TwoFactorRecoveryCode(Base):
+    __tablename__ = "two_factor_recovery_codes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
 class APIKey(Base):
     __tablename__ = "api_keys"
 

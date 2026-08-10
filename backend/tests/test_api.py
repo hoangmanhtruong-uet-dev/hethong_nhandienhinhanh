@@ -176,7 +176,9 @@ def test_two_factor_authenticator_flow() -> None:
             "setup_token": setup_data["setup_token"], "code": code,
         })
         assert enabled.status_code == 200, enabled.text
-        assert enabled.json()["two_factor_enabled"] is True
+        assert enabled.json()["user"]["two_factor_enabled"] is True
+        recovery_codes = enabled.json()["recovery_codes"]
+        assert len(recovery_codes) == 8
 
         assert client.post("/api/auth/logout").status_code == 200
         login = client.post("/api/auth/login", json={
@@ -187,7 +189,16 @@ def test_two_factor_authenticator_flow() -> None:
 
         verified = client.post("/api/auth/2fa/verify-login", json={
             "challenge_token": login.json()["challenge_token"],
-            "code": pyotp.TOTP(setup_data["secret"]).now(),
+            "code": recovery_codes[0],
         })
         assert verified.status_code == 200, verified.text
         assert verified.json()["user"]["id"] == user["id"]
+
+        assert client.post("/api/auth/logout").status_code == 200
+        second_login = client.post("/api/auth/login", json={
+            "email": user["email"], "password": "correct-horse-2026",
+        }).json()
+        reused = client.post("/api/auth/2fa/verify-login", json={
+            "challenge_token": second_login["challenge_token"], "code": recovery_codes[0],
+        })
+        assert reused.status_code == 401

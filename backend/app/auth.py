@@ -14,12 +14,12 @@ from pwdlib import PasswordHash
 from cryptography.fernet import Fernet, InvalidToken
 import pyotp
 import qrcode
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .database import get_db
-from .models import APIKey, User, UserSession
+from .models import APIKey, TwoFactorRecoveryCode, User, UserSession
 from .schemas import (
     APIKeyCreate,
     APIKeyCreatedResponse,
@@ -32,7 +32,10 @@ from .schemas import (
     TeamMemberResponse,
     TwoFactorDisableRequest,
     TwoFactorEnableRequest,
+    TwoFactorEnableResponse,
     TwoFactorLoginRequest,
+    TwoFactorRecoveryCodesResponse,
+    TwoFactorRecoveryRegenerateRequest,
     TwoFactorSetupResponse,
     UserResponse,
     UserRoleUpdate,
@@ -78,6 +81,36 @@ def _open(token: str) -> dict:
 
 def _totp_valid(secret: str, code: str) -> bool:
     return pyotp.TOTP(secret).verify(code, valid_window=1)
+
+
+def _normalize_recovery_code(code: str) -> str:
+    return "".join(character for character in code.upper() if character.isalnum())
+
+
+def _new_recovery_codes(db: Session, user: User) -> list[str]:
+    db.execute(delete(TwoFactorRecoveryCode).where(TwoFactorRecoveryCode.user_id == user.id))
+    codes: list[str] = []
+    for _ in range(8):
+        raw = secrets.token_hex(4).upper()
+        codes.append(f"{raw[:4]}-{raw[4:]}")
+        db.add(TwoFactorRecoveryCode(user_id=user.id, code_hash=digest(raw)))
+    return codes
+
+
+def _consume_recovery_code(db: Session, user: User, code: str) -> bool:
+    normalized = _normalize_recovery_code(code)
+    if len(normalized) != 8:
+        return False
+    item = db.scalar(select(TwoFactorRecoveryCode).where(
+        TwoFactorRecoveryCode.user_id == user.id,
+        TwoFactorRecoveryCode.code_hash == digest(normalized),
+        TwoFactorRecoveryCode.used_at.is_(None),
+    ))
+    if item is None:
+        return False
+    item.used_at = utc_now()
+    db.flush()
+    return True
 
 
 def _decrypt_user_secret(user: User) -> str:
@@ -241,8 +274,8 @@ def setup_two_factor(user: SessionUser) -> TwoFactorSetupResponse:
     )
 
 
-@router.post("/2fa/enable", response_model=UserResponse)
-def enable_two_factor(payload: TwoFactorEnableRequest, user: SessionUser, db: DbSession) -> User:
+@router.post("/2fa/enable", response_model=TwoFactorEnableResponse)
+def enable_two_factor(payload: TwoFactorEnableRequest, user: SessionUser, db: DbSession) -> TwoFactorEnableResponse:
     setup = _open(payload.setup_token)
     if setup.get("purpose") != "setup" or setup.get("user_id") != user.id:
         raise HTTPException(status_code=401, detail="Phiên thiết lập 2FA không hợp lệ.")
@@ -251,9 +284,10 @@ def enable_two_factor(payload: TwoFactorEnableRequest, user: SessionUser, db: Db
         raise HTTPException(status_code=400, detail="Mã Authenticator không đúng.")
     user.two_factor_secret = _fernet().encrypt(secret.encode("ascii")).decode("ascii")
     user.two_factor_enabled = True
+    recovery_codes = _new_recovery_codes(db, user)
     db.commit()
     db.refresh(user)
-    return user
+    return TwoFactorEnableResponse(user=UserResponse.model_validate(user), recovery_codes=recovery_codes)
 
 
 @router.post("/2fa/verify-login", response_model=AuthResponse)
@@ -264,8 +298,8 @@ def verify_two_factor_login(payload: TwoFactorLoginRequest, request: Request, re
     user = db.get(User, challenge.get("user_id"))
     if user is None or not user.is_active or not user.two_factor_enabled:
         raise HTTPException(status_code=401, detail="Tài khoản không hợp lệ.")
-    if not _totp_valid(_decrypt_user_secret(user), payload.code):
-        raise HTTPException(status_code=401, detail="Mã Authenticator không đúng.")
+    if not _totp_valid(_decrypt_user_secret(user), payload.code) and not _consume_recovery_code(db, user, payload.code):
+        raise HTTPException(status_code=401, detail="Mã Authenticator hoặc mã khôi phục không đúng.")
     token, _session, max_age = create_session(db, request, user, bool(challenge.get("remember")))
     set_session_cookie(response, request, token, max_age)
     return AuthResponse(user=UserResponse.model_validate(user))
@@ -279,9 +313,23 @@ def disable_two_factor(payload: TwoFactorDisableRequest, user: SessionUser, db: 
         raise HTTPException(status_code=400, detail="Mã Authenticator không đúng.")
     user.two_factor_enabled = False
     user.two_factor_secret = None
+    db.execute(delete(TwoFactorRecoveryCode).where(TwoFactorRecoveryCode.user_id == user.id))
     db.commit()
     db.refresh(user)
     return user
+
+
+@router.post("/2fa/recovery-codes/regenerate", response_model=TwoFactorRecoveryCodesResponse)
+def regenerate_recovery_codes(payload: TwoFactorRecoveryRegenerateRequest, user: SessionUser, db: DbSession) -> TwoFactorRecoveryCodesResponse:
+    if not user.two_factor_enabled:
+        raise HTTPException(status_code=409, detail="Tài khoản chưa bật 2FA.")
+    if not password_hash.verify(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Mật khẩu không đúng.")
+    if not _totp_valid(_decrypt_user_secret(user), payload.code):
+        raise HTTPException(status_code=400, detail="Mã Authenticator không đúng.")
+    recovery_codes = _new_recovery_codes(db, user)
+    db.commit()
+    return TwoFactorRecoveryCodesResponse(recovery_codes=recovery_codes)
 
 
 @router.post("/logout", response_model=MessageResponse)
