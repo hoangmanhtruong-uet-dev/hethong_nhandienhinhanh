@@ -1,0 +1,24 @@
+{
+  "id": "/",
+  "name": "Vision AI Scanner",
+  "short_name": "Vision AI",
+  "description": "Quét và nhận diện hình ảnh bằng AI trên điện thoại.",
+  "lang": "vi",
+  "start_url": "/#/scanner",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#080910",
+  "theme_color": "#0a0b12",
+  "categories": ["utilities", "productivity", "photo"],
+  "icons": [
+    { "src": "/assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/assets/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Quét ảnh", "short_name": "Scanner", "url": "/#/scanner", "icons": [{ "src": "/assets/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Lịch sử", "short_name": "Lịch sử", "url": "/#/history", "icons": [{ "src": "/assets/icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

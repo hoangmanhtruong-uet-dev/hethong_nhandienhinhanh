@@ -3,12 +3,13 @@
 const BBOX_STYLE_KEY = 'ai-vision-bbox-style';
 const MAX_BATCH_FILES = 5;
 
-// modelsReady removed Phase 2 — use window.AppState.anyModelReady().
-// Kept alias for backward compat until Phase 3.
-Object.defineProperty(window, 'modelsReady', {
-  get: function() { return window.AppState && window.AppState.anyModelReady(); },
-  set: function(v) { /* no-op, kept for compat */ }
-});
+// modelsReady defined in app-state.js already — do not redefine.
+if (!('modelsReady' in window)) {
+  Object.defineProperty(window, 'modelsReady', {
+    get: function() { return window.AppState && window.AppState.anyModelReady(); },
+    set: function(v) { /* no-op, kept for compat */ }
+  });
+}
 
 let batchQueue = [];
 let batchProcessing = false;
@@ -363,12 +364,18 @@ async function processBatchQueue() {
         await new Promise((resolve) => {
             const img = new Image();
             img.onload = async () => {
-                showPreviewImage(item.dataUrl);
+                AppState.resetImage();
+                AppState.image.originalFile = item.file;
+                AppState.image.originalUrl = item.objectUrl;
+                AppState.image.displaySource = item.objectUrl;
+                AppState.image.width = item.width;
+                AppState.image.height = item.height;
+                showPreviewImage(item.objectUrl);
                 await runAnalysis(img, detCanvas, { skipHistory: false });
                 resolve();
             };
             img.onerror = resolve;
-            img.src = item.dataUrl;
+            img.src = item.objectUrl;
         });
     }
 
@@ -379,7 +386,8 @@ async function processBatchQueue() {
 }
 
 function enqueueBatchFiles(files) {
-    const list = [...files].filter(f => f.type.startsWith('image/')).slice(0, MAX_BATCH_FILES);
+    const candidates = [...files].slice(0, MAX_BATCH_FILES);
+    const list = candidates.filter(file => validateImageFile(file).valid);
     if (!list.length) return;
     if (files.length > MAX_BATCH_FILES) {
         showToast({ type: 'warning', title: 'Giới hạn batch', message: `Chỉ xử lý tối đa ${MAX_BATCH_FILES} ảnh mỗi lần.`, duration: 3000 });
@@ -387,22 +395,45 @@ function enqueueBatchFiles(files) {
 
     batchQueue = [];
     let loaded = 0;
+    const finishLoading = () => {
+        if (loaded !== list.length) return;
+        if (batchQueue.length === 1) {
+            const item = batchQueue[0];
+            AppState.resetImage();
+            AppState.image.originalFile = item.file;
+            AppState.image.originalUrl = item.objectUrl;
+            AppState.image.displaySource = item.objectUrl;
+            AppState.image.width = item.width;
+            AppState.image.height = item.height;
+            showPreviewImage(item.objectUrl);
+            batchQueue = [];
+        } else if (batchQueue.length > 1) {
+            processBatchQueue();
+        }
+    };
     list.forEach(file => {
-        if (file.size > 20 * 1024 * 1024) return;
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            batchQueue.push({ name: file.name, dataUrl: e.target.result });
+        const objectUrl = URL.createObjectURL(file);
+        decodeImage(objectUrl).then((decoded) => {
+            const dimensions = validateImageDimensions(decoded);
             loaded++;
-            if (loaded === list.length) {
-                if (batchQueue.length === 1) {
-                    showPreviewImage(batchQueue[0].dataUrl);
-                    batchQueue = [];
-                } else {
-                    processBatchQueue();
-                }
+            if (!dimensions.valid) {
+                URL.revokeObjectURL(objectUrl);
+                finishLoading();
+                return;
             }
-        };
-        reader.readAsDataURL(file);
+            batchQueue.push({
+                name: file.name,
+                file: file,
+                objectUrl: objectUrl,
+                width: dimensions.width,
+                height: dimensions.height
+            });
+            finishLoading();
+        }).catch(() => {
+            URL.revokeObjectURL(objectUrl);
+            loaded++;
+            finishLoading();
+        });
     });
 }
 

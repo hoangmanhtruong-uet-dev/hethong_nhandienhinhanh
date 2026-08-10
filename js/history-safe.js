@@ -1,5 +1,5 @@
 // ── Safe History Storage ─────────────────────────
-// Stores thumbnails + metadata, not full-size base64.
+// Stores thumbnails + metadata + full raw data for restore.
 
 const HISTORY_KEY = 'ai-vision-history';
 const MAX_HISTORY_ITEMS = 50;
@@ -12,7 +12,6 @@ function getHistory() {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    // Filter out corrupted entries
     return parsed.filter(item => item && item.id);
   } catch (e) {
     console.warn('History parse error, resetting:', e);
@@ -25,7 +24,6 @@ function saveHistoryList(list) {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
   } catch (e) {
     if (e.name === 'QuotaExceededError') {
-      // Drop oldest items until under quota
       while (list.length > 0) {
         list.shift();
         try {
@@ -78,6 +76,17 @@ async function addHistoryEntry({ src, predictions, detections, processingTimeMs 
   const detSummary = buildDetectionSummary(detections || []);
   const totalObjects = (detections || []).length;
 
+  // Store full raw data so restore works across sessions
+  const rawPredictions = (predictions || []).slice(0, 10).map(p => ({
+    className: p.className,
+    probability: p.probability
+  }));
+  const rawDetections = (detections || []).slice(0, 50).map(d => ({
+    class: d.class,
+    score: d.score,
+    bbox: d.bbox ? [d.bbox[0], d.bbox[1], d.bbox[2], d.bbox[3]] : [0, 0, 0, 0]
+  }));
+
   const entry = {
     id: 'h-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
     fileName: window.AppState?.image?.originalFile?.name || 'unknown.jpg',
@@ -86,7 +95,10 @@ async function addHistoryEntry({ src, predictions, detections, processingTimeMs 
     classificationSummary: clsSummary,
     detectionSummary: detSummary.map(d => ({ class: d.class, count: d.count, topScore: d.score })),
     totalObjects,
-    processingTimeMs: processingTimeMs || 0
+    processingTimeMs: processingTimeMs || 0,
+    rawPredictions: rawPredictions,
+    rawDetections: rawDetections,
+    src: src || ''
   };
 
   history.unshift(entry);
@@ -110,23 +122,34 @@ function renderHistory() {
   history.forEach(entry => {
     const div = document.createElement('div');
     div.className = 'history-item';
+    div.dataset.id = entry.id;
     div.innerHTML = `
       <div class="history-thumb">
-        ${entry.thumbnail ? `<img src="${entry.thumbnail}" alt="${entry.fileName}" loading="lazy">` : '<div class="history-no-thumb">📷</div>'}
+        ${entry.thumbnail ? `<img src="${entry.thumbnail}" alt="${escapeHtml(entry.fileName)}" loading="lazy">` : '<div class="history-no-thumb">📷</div>'}
       </div>
       <div class="history-info">
         <div class="history-name">${escapeHtml(entry.fileName)}</div>
         <div class="history-meta">${formatDate(entry.createdAt)} • ${entry.totalObjects || 0} vật thể</div>
         <div class="history-tags">
           ${(entry.classificationSummary || []).slice(0, 2).map(p =>
-            `<span class="history-tag">${translateLabel(p.label)} ${(p.probability * 100).toFixed(0)}%</span>`
+            `<span class="history-tag">${escapeHtml(translateLabel(p.label))} ${(p.probability * 100).toFixed(0)}%</span>`
           ).join('')}
           ${(entry.detectionSummary || []).slice(0, 2).map(d =>
-            `<span class="history-tag">${translateLabel(d.class)} ${d.count}</span>`
+            `<span class="history-tag">${escapeHtml(translateLabel(d.class))} ${d.count}</span>`
           ).join('')}
         </div>
       </div>
     `;
+    // Ponytail: defer to restoreFromHistory when script.js is loaded; fallback on dead toast until then
+    div.addEventListener('click', function() {
+      if (typeof window.restoreFromHistory === 'function') {
+        window.restoreFromHistory(entry.id);
+      } else if (typeof window.restoreHistoryFromEntry === 'function') {
+        window.restoreHistoryFromEntry(entry);
+      } else {
+        showToast({ type: 'info', title: 'Thông tin', message: 'Chi tiết phân tích không còn trong lịch sử. Vui lòng phân tích lại.', duration: 3000 });
+      }
+    });
     container.appendChild(div);
   });
 }
@@ -151,6 +174,83 @@ function formatDate(iso) {
   }
 }
 
+// ── Restore full analysis from stored history entry ──
+function restoreHistoryFromEntry(entry) {
+  if (!entry) return;
+
+  const preds = entry.rawPredictions || [];
+  const dets = entry.rawDetections || [];
+  const desc = generateDescription(preds, dets);
+
+  const result = {
+    id: entry.id,
+    src: entry.src || '',
+    predictions: preds,
+    rawDetections: dets,
+    detections: dets,
+    description: desc,
+    time: entry.createdAt,
+    totalTimeMs: entry.processingTimeMs || 0
+  };
+
+  window.lastAnalysis = { ...result, rawDetections: dets, detections: dets };
+  window.AppState.analysis.lastResult = result;
+
+  // Re-render UI
+  const filtered = (typeof applyDetectionFilters === 'function') ? applyDetectionFilters(dets) : dets;
+  window.lastAnalysis.detections = filtered;
+  document.getElementById('results-section').hidden = false;
+
+  const pl = document.getElementById('prediction-list');
+  if (pl) pl.innerHTML = '';
+  const dt = document.getElementById('detection-tags');
+  if (dt) dt.innerHTML = '';
+  document.getElementById('detections-section').hidden = true;
+  document.getElementById('classify-label').hidden = true;
+
+  if (preds.length) {
+    document.getElementById('classify-label').hidden = false;
+    if (typeof renderPredictions === 'function') renderPredictions(preds);
+  }
+  if (filtered.length) {
+    if (typeof renderDetectionTags === 'function') renderDetectionTags(filtered);
+    document.getElementById('detections-section').hidden = false;
+  }
+  if (typeof window.updateResultsUI === 'function') window.updateResultsUI(preds, filtered);
+  const aiDesc = document.getElementById('ai-description-text');
+  if (aiDesc) aiDesc.textContent = desc;
+  const st = document.getElementById('status-text');
+  if (st) st.textContent = 'Đã tải lại kết quả';
+  const dot = document.querySelector('#result-dot');
+  if (dot) dot.className = 'pulse-dot success';
+
+  // Restore preview if in upload mode
+  if (window.currentMode === 'upload' && entry.src) {
+    const pi = document.getElementById('preview-image');
+    if (pi) {
+      pi.src = entry.src;
+      pi.hidden = false;
+      document.getElementById('upload-placeholder').hidden = true;
+    }
+    const rb = document.getElementById('reset-btn');
+    if (rb) rb.hidden = false;
+    const ab = document.getElementById('analyze-btn');
+    if (ab) ab.disabled = false;
+    const doBBoxes = document.getElementById('opt-bboxes')?.checked;
+    const detCanvas = document.getElementById('detection-canvas');
+    if (doBBoxes && filtered.length && typeof drawBoundingBoxes === 'function') {
+      const redraw = () => drawBoundingBoxes(pi, detCanvas, filtered);
+      pi.onload = redraw;
+      if (pi.complete) redraw();
+    }
+  }
+
+  // Highlight in history list
+  document.querySelectorAll('#history-list .history-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.id === entry.id);
+  });
+}
+
 // Alias for backward compat with script.js
 window.addHistoryItem = addHistoryEntry;
 // Guard for translateLabel if not yet loaded (defined in features.js)
@@ -161,8 +261,13 @@ if (typeof window.translateLabel !== 'function') {
 if (typeof window.buildDetectionSummary !== 'function') {
   window.buildDetectionSummary = function(d) { return d || []; };
 }
+// Guard for generateDescription
+if (typeof window.generateDescription !== 'function') {
+  window.generateDescription = function(p, d) { return ''; };
+}
 
 window.getHistory = getHistory;
 window.addHistoryEntry = addHistoryEntry;
 window.renderHistory = renderHistory;
 window.clearHistory = clearHistory;
+window.restoreHistoryFromEntry = restoreHistoryFromEntry;

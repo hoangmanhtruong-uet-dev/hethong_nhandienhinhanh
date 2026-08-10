@@ -98,36 +98,24 @@ AppState.anyModelReady = function () {
 (function () {
   function syncAliases() {
     var st = window.AppState;
-
-    // Classifier model
-    window.classifierModel = st.models.classifier.instance;
-
-    // Detector model
-    window.detectorModel = st.models.detector.instance;
-
-    // modelsReady = both ready
+    // script.js defines classifierModel/detectorModel as getter-only;
+    // webcamStream/webcamRunning getter derives from AppState. 
+    // Writing them here causes infinite setter loop (script.js setter →
+    // AppState.camera.stream setter → syncAliases → ...).
     var bothReady = st.isModelReady('classifier') && st.isModelReady('detector');
-    window.modelsReady = bothReady;
-    // Also update features.js local modelsReady via setModelsReady
     if (typeof window.setModelsReady === 'function') {
       window.setModelsReady(bothReady);
     }
-
-    // Camera state
-    window.webcamRunning = st.camera.isRunning;
-    window.webcamStream = st.camera.stream;
   }
 
-  // Intercept AppState writes via MutationObserver-inspired proxy
-  // Simple: expose a manual sync
   window.__syncAppStateAliases = syncAliases;
 
-  // Auto-sync on a tick (coarse but safe for Phase 2)
   var _origSet = function (obj, prop, value) {
     obj[prop] = value;
   };
 
   // Hook model changes
+  var st = window.AppState;
   var _models = st.models;
   ['classifier', 'detector'].forEach(function (type) {
     var m = _models[type];
@@ -145,17 +133,18 @@ AppState.anyModelReady = function () {
     });
   });
 
-  // Camera hooks
+  // Camera hooks — script.js aliases sync the other direction via getter;
+  // writing to window.webcamStream here would trigger infinite setter loop.
   (function () {
     var cam = st.camera;
     var _stream = cam.stream, _running = cam.isRunning;
     Object.defineProperty(cam, 'stream', {
       get: function () { return _stream; },
-      set: function (v) { _stream = v; window.webcamStream = v; syncAliases(); }
+      set: function (v) { _stream = v; syncAliases(); }
     });
     Object.defineProperty(cam, 'isRunning', {
       get: function () { return _running; },
-      set: function (v) { _running = v; window.webcamRunning = v; syncAliases(); }
+      set: function (v) { _running = v; syncAliases(); }
     });
   })();
 })();

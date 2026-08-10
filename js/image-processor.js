@@ -3,6 +3,7 @@
 
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024; // 15 MB
 const INFERENCE_MAX_DIM = 1600;
+const MAX_IMAGE_PIXELS = 20 * 1024 * 1024; // Guard against decompression bombs / UI freezes
 const VALID_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 function validateImageFile(file) {
@@ -30,6 +31,21 @@ function decodeImage(src) {
     img.onerror = () => reject(new Error('Không thể giải mã ảnh. File có thể bị hỏng hoặc không đúng định dạng.'));
     img.src = src;
   });
+}
+
+function validateImageDimensions(img) {
+  const width = img.naturalWidth || img.width || 0;
+  const height = img.naturalHeight || img.height || 0;
+  if (!width || !height) {
+    return { valid: false, error: 'Không thể xác định kích thước ảnh.' };
+  }
+  if (width * height > MAX_IMAGE_PIXELS) {
+    return {
+      valid: false,
+      error: `Ảnh có độ phân giải quá lớn (${width}×${height}). Vui lòng dùng ảnh không quá ${Math.round(MAX_IMAGE_PIXELS / 1000000)} megapixel.`
+    };
+  }
+  return { valid: true, width, height };
 }
 
 function createInferenceCanvas(img, maxDim) {
@@ -68,5 +84,6 @@ function computeBboxScale(imgNaturalW, imgNaturalH, previewEl) {
 window.validateImage = validateImageFile;
 window.validateImageFile = validateImageFile;
 window.decodeImage = decodeImage;
+window.validateImageDimensions = validateImageDimensions;
 window.createInferenceCanvas = createInferenceCanvas;
 window.computeBboxScale = computeBboxScale;

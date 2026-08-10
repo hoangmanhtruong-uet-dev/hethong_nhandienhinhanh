@@ -15,10 +15,12 @@ const CAMERA_UNKNOWN_ERROR = 'Không thể khởi động camera. Vui lòng ki�
 let cameraStream = null;
 let cameraRafId = null;
 let cameraErrorPanel = null;
+let cameraErrorPanelInitialized = false;
 
 function createCameraErrorPanel() {
-  if (cameraErrorPanel) return cameraErrorPanel;
+  if (cameraErrorPanelInitialized) return cameraErrorPanel;
   cameraErrorPanel = document.createElement('div');
+  cameraErrorPanelInitialized = true;
   cameraErrorPanel.id = 'camera-error-panel';
   cameraErrorPanel.className = 'camera-error-panel';
   cameraErrorPanel.hidden = true;
@@ -32,7 +34,7 @@ function createCameraErrorPanel() {
     </div>
   `;
   // Insert after webcam container
-  const wc = document.getElementById('webcam-container');
+  const wc = document.querySelector('.webcam-container');
   if (wc && wc.parentNode) {
     wc.parentNode.insertBefore(cameraErrorPanel, wc.nextSibling);
   } else {
@@ -53,9 +55,6 @@ function createCameraErrorPanel() {
     stopCamera();
     // Switch to upload mode
     if (typeof switchMode === 'function') switchMode('upload');
-    const tabs = document.querySelectorAll('.tab-btn');
-    tabs.forEach(t => t.classList.remove('active'));
-    document.querySelector('.tab-btn[data-mode="upload"]')?.classList.add('active');
   });
 
   return cameraErrorPanel;
@@ -68,7 +67,7 @@ function showCameraError(error) {
     msg.textContent = CAMERA_ERROR_MESSAGES[error.name] || error.message || CAMERA_UNKNOWN_ERROR;
   }
   panel.hidden = false;
-  const wc = document.getElementById('webcam-container');
+  const wc = document.querySelector('.webcam-container');
   if (wc) wc.hidden = true;
   if (window.AppState) {
     window.AppState.camera.isRunning = false;
@@ -78,7 +77,7 @@ function showCameraError(error) {
 
 function hideCameraError() {
   if (cameraErrorPanel) cameraErrorPanel.hidden = true;
-  const wc = document.getElementById('webcam-container');
+  const wc = document.querySelector('.webcam-container');
   if (wc) wc.hidden = false;
 }
 
@@ -94,7 +93,7 @@ async function startCamera() {
 
   const constraints = {
     video: {
-      facingMode: typeof facingMode !== 'undefined' ? facingMode : 'environment',
+      facingMode: window.facingMode || 'environment',
       width: { ideal: 1280 },
       height: { ideal: 720 }
     },
@@ -177,5 +176,4 @@ if (typeof window.stopCamera === 'undefined') {
 window.startCamera = startCamera;
 window.showCameraError = showCameraError;
 window.hideCameraError = hideCameraError;
-window.cameraStream = null;
-window.cameraRafId = null;
+// cameraStream / cameraRafId defined at top. No global alias needed — AppState owns these.

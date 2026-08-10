@@ -162,11 +162,12 @@ function updateModelUI() {
   __lastNotifiedState = { classifier: cls.status, detector: det.status };
 
   // Enable/disable analyze button based on model state
+  const ab = document.getElementById('analyze-btn');
   if (window.AppState.anyModelReady()) {
     const previewVisible = document.getElementById('preview-image') && !document.getElementById('preview-image').hidden;
-    if (typeof analyzeBtn !== 'undefined' && analyzeBtn) analyzeBtn.disabled = !previewVisible;
+    if (ab) ab.disabled = !previewVisible;
   } else {
-    if (typeof analyzeBtn !== 'undefined' && analyzeBtn) analyzeBtn.disabled = true;
+    if (ab) ab.disabled = true;
   }
 }
 

@@ -10,7 +10,8 @@ let showLiveBusy = false;
 let lastLiveTick = 0;
 let stableInsight = { key: '', count: 0 };
 let lastSpokenKey = '';
-let facingMode = 'environment';
+// Shared with camera-manager.js via window
+window.facingMode = 'environment';
 
 const liveLabelOverlay = document.getElementById('live-label-overlay');
 const liveLabelIcon    = document.getElementById('live-label-icon');
@@ -193,20 +194,28 @@ async function showRecognizeLoop() {
 
     const now = performance.now();
     if (now - lastLiveTick < LIVE_INTERVAL_MS || showLiveBusy) return;
-    if (!classifierModel || !detectorModel || webcamVideo.readyState < 2) return;
+    if (!classifierModel && !detectorModel) return;
+    if (webcamVideo.readyState < 2) return;
 
     lastLiveTick = now;
     showLiveBusy = true;
 
     try {
-        const doClassify = document.getElementById('opt-classify')?.checked !== false;
-        const doDetect = document.getElementById('opt-detect')?.checked !== false;
+        const doClassify = document.getElementById('opt-classify')?.checked !== false && !!classifierModel;
+        const doDetect = document.getElementById('opt-detect')?.checked !== false && !!detectorModel;
         const doBBoxes = document.getElementById('opt-bboxes')?.checked !== false;
 
-        const [detections, predictions] = await Promise.all([
-            doDetect ? detectorModel.detect(webcamVideo) : Promise.resolve([]),
-            doClassify ? classifierModel.classify(webcamVideo) : Promise.resolve([])
-        ]);
+        // Use allSettled so one model failure doesn't kill the other
+        const tasks = [];
+        if (doDetect && detectorModel) tasks.push(detectorModel.detect(webcamVideo));
+        else tasks.push(Promise.resolve([]));
+        if (doClassify && classifierModel) tasks.push(classifierModel.classify(webcamVideo));
+        else tasks.push(Promise.resolve([]));
+
+        const settled = await Promise.allSettled(tasks);
+        let detections = [], predictions = [];
+        if (settled[0].status === 'fulfilled') detections = settled[0].value;
+        if (settled[1].status === 'fulfilled') predictions = settled[1].value;
 
         const filtered = applyLiveDetectionFilters(detections);
         const insight = mergeLiveInsight(filtered, predictions);
@@ -228,7 +237,8 @@ async function showRecognizeLoop() {
 }
 
 function startShowRecognize() {
-    if (!webcamRunning || !classifierModel || !detectorModel) return;
+    if (!webcamRunning) return;
+    if (!classifierModel && !detectorModel) return; // need at least one model
     showRecognizeActive = true;
     lastLiveTick = 0;
     stableInsight = { key: '', count: 0 };
@@ -271,7 +281,7 @@ function initShowRecognize() {
     });
 
     flipCameraBtn?.addEventListener('click', async () => {
-        facingMode = facingMode === 'environment' ? 'user' : 'environment';
+        window.facingMode = window.facingMode === 'environment' ? 'user' : 'environment';
         if (!webcamRunning) return;
         const wasShowing = showRecognizeActive;
         stopShowRecognize();

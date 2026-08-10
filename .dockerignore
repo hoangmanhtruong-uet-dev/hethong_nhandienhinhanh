@@ -1,0 +1,11 @@
+.git
+.pytest_cache
+backend/.pytest_cache
+backend/.venv
+backend/.env
+backend/data
+dist
+node_modules
+**/__pycache__
+*.pyc
+codex-clipboard-*.png
