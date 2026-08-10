@@ -21,7 +21,7 @@ class Scan(Base):
     __tablename__ = "scans"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
-    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     file_name: Mapped[str] = mapped_column(String(255))
     stored_name: Mapped[str] = mapped_column(String(255), unique=True)
     mime_type: Mapped[str] = mapped_column(String(80))
@@ -50,10 +50,11 @@ class Scan(Base):
 
 class Collection(Base):
     __tablename__ = "collections"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_collections_user_name"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
-    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
-    name: Mapped[str] = mapped_column(String(120), unique=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120))
     description: Mapped[str] = mapped_column(Text, default="")
     color: Mapped[str] = mapped_column(String(20), default="#7c6cff")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -81,7 +82,7 @@ class Feedback(Base):
     __tablename__ = "feedback"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
-    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     scan_id: Mapped[str | None] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"), nullable=True)
     feedback_type: Mapped[str] = mapped_column(String(40), index=True)
     original_label: Mapped[str] = mapped_column(String(255), default="")

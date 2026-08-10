@@ -58,6 +58,8 @@ async def security_headers(request: Request, call_next):
 
 if (frontend_dist.is_dir()):
     app.mount("/assets", StaticFiles(directory=frontend_dist / "assets"), name="frontend-assets")
+    if (frontend_dist / "vendor").is_dir():
+        app.mount("/vendor", StaticFiles(directory=frontend_dist / "vendor"), name="frontend-vendor")
 
 
 @app.get("/style.css", include_in_schema=False)
@@ -68,6 +70,11 @@ def frontend_styles() -> FileResponse:
 @app.get("/script.js", include_in_schema=False)
 def frontend_script() -> FileResponse:
     return FileResponse(frontend_dist / "script.js", media_type="application/javascript")
+
+
+@app.get("/yolo-runtime.js", include_in_schema=False)
+def frontend_yolo_runtime() -> FileResponse:
+    return FileResponse(frontend_dist / "yolo-runtime.js", media_type="application/javascript")
 
 
 @app.get("/manifest.webmanifest", include_in_schema=False)

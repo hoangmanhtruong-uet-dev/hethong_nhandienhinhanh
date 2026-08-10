@@ -54,6 +54,35 @@ def init_db() -> None:
                 connection.execute(text(
                     "UPDATE users SET role = 'owner' WHERE id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1)"
                 ))
+            owner_id = connection.execute(text(
+                "SELECT id FROM users WHERE role = 'owner' ORDER BY created_at ASC LIMIT 1"
+            )).scalar_one_or_none()
+            for table_name in ("scans", "collections", "feedback"):
+                columns = {column["name"] for column in inspect(connection).get_columns(table_name)}
+                if "user_id" not in columns:
+                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN user_id VARCHAR(36)"))
+            if owner_id:
+                for table_name in ("scans", "collections", "feedback"):
+                    columns = {column["name"] for column in inspect(connection).get_columns(table_name)}
+                    if "user_id" in columns:
+                        connection.execute(
+                            text(f"UPDATE {table_name} SET user_id = :owner_id WHERE user_id IS NULL"),
+                            {"owner_id": owner_id},
+                        )
+
+            if connection.dialect.name == "postgresql" and owner_id:
+                quote = connection.dialect.identifier_preparer.quote
+                unique_constraints = inspect(connection).get_unique_constraints("collections")
+                for constraint in unique_constraints:
+                    columns = constraint.get("column_names") or []
+                    name = constraint.get("name")
+                    if columns == ["name"] and name:
+                        connection.execute(text(f"ALTER TABLE collections DROP CONSTRAINT {quote(name)}"))
+                connection.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_collections_user_name ON collections (user_id, name)"
+                ))
+                for table_name in ("scans", "collections", "feedback"):
+                    connection.execute(text(f"ALTER TABLE {table_name} ALTER COLUMN user_id SET NOT NULL"))
     # create_all does not add columns to an existing SQLite database. Keep old
     # local data intact and add nullable ownership columns in-place.
     if settings.database_url.startswith("sqlite"):

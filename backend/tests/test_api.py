@@ -120,6 +120,45 @@ def test_complete_mvp_flow() -> None:
         assert "text/csv" in csv_response.headers["content-type"]
 
 
+def test_accounts_cannot_access_each_others_data() -> None:
+    with TestClient(app) as user_a, TestClient(app) as user_b:
+        register(user_a, "isolation-a@example.com")
+        register(user_b, "isolation-b@example.com")
+
+        scan_a = create_scan(user_a)
+        scan_id = scan_a["id"]
+        collection_a = user_a.post("/api/collections", json={"name": "Dùng chung tên"})
+        collection_b = user_b.post("/api/collections", json={"name": "Dùng chung tên"})
+        assert collection_a.status_code == 201, collection_a.text
+        assert collection_b.status_code == 201, collection_b.text
+        collection_a_id = collection_a.json()["id"]
+        collection_b_id = collection_b.json()["id"]
+
+        assert user_b.get("/api/scans").json()["total"] == 0
+        assert [item["id"] for item in user_a.get("/api/collections").json()] == [collection_a_id]
+        assert [item["id"] for item in user_b.get("/api/collections").json()] == [collection_b_id]
+        assert user_b.get(f"/api/scans/{scan_id}").status_code == 404
+        assert user_b.get(f"/api/scans/{scan_id}/image").status_code == 404
+        assert user_b.get(f"/api/scans/{scan_id}/export").status_code == 404
+        assert user_b.patch(f"/api/scans/{scan_id}", json={"favorite": True}).status_code == 404
+        assert user_b.delete(f"/api/scans/{scan_id}").status_code == 404
+        assert user_b.post("/api/feedback", json={
+            "scan_id": scan_id, "feedback_type": "confirm",
+        }).status_code == 404
+
+        assert user_b.get(f"/api/collections/{collection_a_id}").status_code == 404
+        assert user_b.patch(f"/api/collections/{collection_a_id}", json={"name": "Chiếm quyền"}).status_code == 404
+        assert user_b.delete(f"/api/collections/{collection_a_id}").status_code == 404
+        assert user_b.get(f"/api/collections/{collection_a_id}/items").status_code == 404
+        assert user_b.post(f"/api/collections/{collection_b_id}/items", json={"scan_id": scan_id}).status_code == 404
+
+        assert user_b.delete("/api/scans").status_code == 200
+        assert user_a.get(f"/api/scans/{scan_id}").status_code == 200
+
+        assert user_a.put("/api/settings/privacy", json={"theme": "light"}).status_code == 200
+        assert user_b.get("/api/settings/privacy").json()["theme"] == "dark"
+
+
 def test_rejects_fake_image() -> None:
     with TestClient(app) as client:
         login = client.post("/api/auth/login", json={
@@ -164,6 +203,11 @@ def test_pwa_assets_are_served() -> None:
         assert worker.status_code == 200
         assert worker.headers["service-worker-allowed"] == "/"
         assert "startsWith('/api/')" in worker.text
+        assert client.get("/yolo-runtime.js").status_code == 200
+        model = client.get("/assets/models/yolov8n.onnx")
+        assert model.status_code == 200
+        assert len(model.content) > 10_000_000
+        assert client.get("/vendor/ort.webgpu.min.js").status_code == 200
 
 
 def test_two_factor_authenticator_flow() -> None:

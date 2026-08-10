@@ -64,7 +64,16 @@
     collections: [],
     selectedCollection: null,
     collectionItems: [],
-    models: { classifier: null, detector: null, status: 'loading' },
+    models: {
+      classifier: null,
+      detector: null,
+      detectorPromise: null,
+      status: 'loading',
+      yoloStatus: 'idle',
+      yoloProvider: 'none',
+      yoloError: '',
+      yoloFallback: false,
+    },
     analysisProgress: 12,
     backendOnline: null,
     authChecked: false,
@@ -306,6 +315,10 @@
   }
 
   function processingPage() {
+    const active = state.modelPreferences.active;
+    const modelName = active === 'yolo' ? 'YOLOv8n ONNX' : active === 'coco' ? 'COCO-SSD Lite' : active === 'mobilenet' ? 'MobileNet V2' : 'MobileNet / COCO-SSD';
+    return shell(`<main class="page processing-page"><div><div class="processing-orb">${icon('neurology')}</div><div class="eyebrow">Neural processing</div><h2>Đang phân tích hình ảnh...</h2><p class="lead">Mô hình Vision AI đang trích xuất đặc trưng và nhận diện vật thể.</p><div class="progress"><span style="--progress:${state.analysisProgress}%"></span></div><p class="mono tiny muted">${state.analysisProgress}% · ${modelName}</p></div></main>`, { title: 'Đang xử lý AI' });
+    /* istanbul ignore next -- legacy markup kept below for a minimal UI migration */
     return shell(`<main class="page processing-page"><div><div class="processing-orb">${icon('neurology')}</div><div class="eyebrow">Neural processing</div><h2>Đang phân tích hình ảnh...</h2><p class="lead">Mô hình Vision AI đang trích xuất đặc trưng và nhận diện vật thể.</p><div class="progress"><span style="--progress:${state.analysisProgress}%"></span></div><p class="mono tiny muted">${state.analysisProgress}% · MobileNet / COCO-SSD</p></div></main>`, { title: 'Đang xử lý AI' });
   }
 
@@ -393,6 +406,27 @@
 
   function modelCenterPage() {
     const p = state.modelPreferences;
+    const assessment = yoloDeviceAssessment();
+    const yoloStatus = state.models.yoloStatus === 'ready'
+      ? `Sẵn sàng · ${state.models.yoloProvider.toUpperCase()}`
+      : state.models.yoloStatus === 'loading' ? 'Đang tải...'
+      : state.models.yoloStatus === 'fallback' ? 'Fallback COCO-SSD'
+      : state.models.yoloStatus === 'error' ? 'Lỗi tải model'
+      : 'Chưa tải';
+    const deviceCopy = assessment.weak
+      ? 'Thiết bị này sẽ tự động dùng COCO-SSD để tránh treo ứng dụng.'
+      : `Thiết bị sẽ chạy YOLO bằng ${assessment.webgpu ? 'WebGPU (ưu tiên)' : 'WebAssembly'}. Model chỉ tải khi bạn chọn.`;
+    const renderModelCard = (id, name, copy, metrics) => `<button class="model-card ${p.active === id ? 'active' : ''}" data-model="${id}"><div class="row between"><div><h3>${name}</h3><p>${copy}</p></div><span class="tag ${p.active === id ? 'active' : ''}">${p.active === id ? 'Đang dùng' : 'Chọn'}</span></div><div class="model-metrics">${metrics.map(([label,value]) => `<span><small>${label}</small><strong>${value}</strong></span>`).join('')}</div></button>`;
+    return shell(`<main class="page"><div class="eyebrow">Neural runtime</div><h1 class="hero-title">Model Center</h1><p class="lead">Chọn cân bằng giữa độ chính xác, tốc độ và pin của thiết bị.</p>
+      <div class="card" style="margin:16px 0"><div class="row between"><span><strong>Tiết kiệm pin</strong><small class="muted" style="display:block">Giảm độ phân giải khung phân tích</small></span><label class="switch"><input id="power-save" type="checkbox" ${p.powerSave ? 'checked' : ''}><span></span></label></div><div class="field" style="margin-top:16px"><label for="confidence-slider">Ngưỡng tin cậy: <strong id="confidence-value">${Math.round(p.threshold * 100)}%</strong></label><input id="confidence-slider" type="range" min="20" max="95" value="${Math.round(p.threshold * 100)}"></div></div>
+      <div class="stack">
+        ${renderModelCard('hybrid','MobileNet + COCO-SSD','Phân loại và phát hiện vật thể trên trình duyệt.',[['Trạng thái',state.models.status],['Runtime','WebGL'],['Chế độ','Hybrid']])}
+        ${renderModelCard('mobilenet','MobileNet V2','Nhanh, nhẹ; phù hợp máy cấu hình thấp.',[['Kích thước','~3.5 MB'],['Runtime','WebGL'],['Loại','Classifier']])}
+        ${renderModelCard('coco','COCO-SSD Lite','Phát hiện nhiều vật thể và bounding box.',[['Kích thước','~5 MB'],['Runtime','WebGL'],['Loại','Detector']])}
+        ${renderModelCard('yolo','YOLOv8 Nano ONNX','Phát hiện 80 loại vật thể với NMS chạy hoàn toàn trên thiết bị.',[['Kích thước','12.3 MB'],['Runtime',state.models.yoloProvider === 'none' ? 'ONNX' : state.models.yoloProvider.toUpperCase()],['Trạng thái',yoloStatus]])}
+      </div>
+      <div class="card" style="margin-top:14px"><p class="tiny muted">${deviceCopy}</p>${state.models.yoloError ? `<p class="tiny" style="color:var(--danger)">${esc(state.models.yoloError)}</p>` : ''}</div></main>`, { title: 'Trung tâm Mô hình AI', back: true });
+    /* istanbul ignore next -- legacy markup kept below for a minimal UI migration */
     const modelCard = (id, name, copy, metrics, available = true) => `<button class="model-card ${p.active === id ? 'active' : ''}" data-model="${id}" ${available ? '' : 'disabled'}><div class="row between"><div><h3>${name}</h3><p>${copy}</p></div><span class="tag ${p.active === id ? 'active' : ''}">${p.active === id ? 'Đang dùng' : available ? 'Chọn' : 'Chưa cài'}</span></div><div class="model-metrics">${metrics.map(([label,value]) => `<span><small>${label}</small><strong>${value}</strong></span>`).join('')}</div></button>`;
     return shell(`<main class="page"><div class="eyebrow">Neural runtime</div><h1 class="hero-title">Model Center</h1><p class="lead">Chọn cân bằng giữa độ chính xác, tốc độ và pin của thiết bị.</p>
       <div class="card" style="margin:16px 0"><div class="row between"><span><strong>Tiết kiệm pin</strong><small class="muted" style="display:block">Giảm độ phân giải khung phân tích</small></span><label class="switch"><input id="power-save" type="checkbox" ${p.powerSave ? 'checked' : ''}><span></span></label></div><div class="field" style="margin-top:16px"><label for="confidence-slider">Ngưỡng tin cậy: <strong id="confidence-value">${Math.round(p.threshold * 100)}%</strong></label><input id="confidence-slider" type="range" min="20" max="95" value="${Math.round(p.threshold * 100)}"></div></div>
@@ -532,20 +566,25 @@
       const classifier = await window.mobilenet?.load({ version: 2, alpha: 0.5 });
       if (!classifier) throw new Error('Không tải được MobileNet');
       classifierReady = true;
-      state.models = { classifier, detector: null, status: 'ready' };
+      Object.assign(state.models, { classifier, detector: null, status: 'ready' });
       render();
 
-      window.cocoSsd?.load({ base: 'lite_mobilenet_v2' }).then(detector => {
+      state.models.detectorPromise = window.cocoSsd?.load({ base: 'lite_mobilenet_v2' });
+      state.models.detectorPromise?.then(detector => {
         state.models.detector = detector;
+        state.models.detectorPromise = null;
         render();
-      }).catch(error => console.warn('COCO-SSD background loading failed:', error));
+      }).catch(error => {
+        state.models.detectorPromise = null;
+        console.warn('COCO-SSD background loading failed:', error);
+      });
     } catch (error) {
       console.warn('Model loading failed:', error);
       if (!classifierReady) {
         try {
           const detector = await window.cocoSsd?.load({ base: 'lite_mobilenet_v2' });
           if (!detector) throw error;
-          state.models = { classifier: null, detector, status: 'ready' };
+          Object.assign(state.models, { classifier: null, detector, status: 'ready' });
         } catch (_) {
           state.models.status = 'error';
         }
@@ -698,7 +737,49 @@
     canvas.toBlob(blob => validateAndAnalyze(new File([blob], `scan-${Date.now()}.jpg`, { type: 'image/jpeg' })), 'image/jpeg', .9);
   }
 
-  async function analyzeImage(image) {
+  function yoloDeviceAssessment() {
+    return window.VisionYolo?.deviceAssessment?.() || {
+      weak: true, memory: 0, cores: 0, saveData: false, webgpu: false,
+    };
+  }
+
+  async function ensureCocoDetector() {
+    if (state.models.detector) return state.models.detector;
+    state.models.detectorPromise ||= window.cocoSsd?.load({ base: 'lite_mobilenet_v2' });
+    let detector;
+    try { detector = await state.models.detectorPromise; }
+    finally { state.models.detectorPromise = null; }
+    if (!detector) throw new Error('COCO-SSD is unavailable.');
+    state.models.detector = detector;
+    return detector;
+  }
+
+  async function ensureYoloLoaded({ force = false } = {}) {
+    if (!window.VisionYolo) throw new Error('YOLO runtime is unavailable.');
+    if (state.models.yoloStatus === 'ready') return true;
+    state.models.yoloStatus = 'loading';
+    state.models.yoloError = '';
+    state.models.yoloFallback = false;
+    if (state.route === 'models') render();
+    try {
+      const loaded = await window.VisionYolo.load({ force });
+      state.models.yoloStatus = 'ready';
+      state.models.yoloProvider = loaded.provider || window.VisionYolo.provider || 'wasm';
+      if (state.route === 'models') render();
+      return true;
+    } catch (error) {
+      state.models.yoloStatus = error?.code === 'WEAK_DEVICE' ? 'fallback' : 'error';
+      state.models.yoloError = error?.message || 'YOLO could not be loaded.';
+      state.models.yoloFallback = true;
+      state.modelPreferences.active = 'coco';
+      localStorage.setItem('vision-active-model', 'coco');
+      await ensureCocoDetector();
+      if (state.route === 'models') render();
+      return false;
+    }
+  }
+
+  async function analyzeImageLegacy(image) {
     state.analysisProgress = 12;
     go('processing');
     const canvas = document.createElement('canvas');
@@ -734,6 +815,112 @@
         predictions,
         detections,
         model_version: 'MobileNet + COCO-SSD',
+        processing_time_ms: Math.round(performance.now() - started),
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+        confirmed: false,
+        favorite: false,
+      };
+      setTimeout(() => go('result'), 350);
+    } catch (error) {
+      console.error(error);
+      toast('Mô hình AI chưa sẵn sàng. Hãy thử lại.', 'error');
+      go('offline');
+    }
+  }
+
+  async function analyzeImage(image) {
+    state.analysisProgress = 12;
+    go('processing');
+    const canvas = document.createElement('canvas');
+    const maxDimension = state.modelPreferences.powerSave ? 640 : 960;
+    const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+    const started = performance.now();
+    let predictions = [];
+    let detections = [];
+    let modelVersion = '';
+
+    try {
+      state.analysisProgress = 32;
+      render();
+      let activeModel = state.modelPreferences.active;
+
+      if (activeModel === 'yolo') {
+        if (state.modelPreferences.powerSave) {
+          state.models.yoloStatus = 'fallback';
+          state.models.yoloFallback = true;
+          state.models.yoloError = 'Chế độ tiết kiệm pin đang bật.';
+          state.modelPreferences.active = 'coco';
+          localStorage.setItem('vision-active-model', 'coco');
+          activeModel = 'coco';
+        }
+      }
+
+      if (activeModel === 'yolo') {
+        const yoloReady = await ensureYoloLoaded();
+        if (yoloReady) {
+          state.analysisProgress = 64;
+          render();
+          try {
+            detections = await window.VisionYolo.detect(canvas, { threshold: state.modelPreferences.threshold });
+            predictions = detections.slice(0, 5).map(item => ({ className: item.class, probability: item.score }));
+            modelVersion = `YOLOv8n ONNX · ${(state.models.yoloProvider || 'wasm').toUpperCase()}`;
+          } catch (error) {
+            console.warn('YOLO inference failed; falling back to COCO-SSD:', error);
+            state.models.yoloStatus = 'fallback';
+            state.models.yoloError = error?.message || 'YOLO inference failed.';
+            state.models.yoloFallback = true;
+            activeModel = 'coco';
+            state.modelPreferences.active = 'coco';
+            localStorage.setItem('vision-active-model', 'coco');
+            toast('YOLO không chạy ổn định trên máy này. Đã chuyển sang COCO-SSD.', 'error');
+          }
+        } else {
+          activeModel = 'coco';
+          toast('Thiết bị cấu hình thấp: tự động dùng COCO-SSD.', 'error');
+        }
+      }
+
+      if (activeModel !== 'yolo') {
+        if (state.models.status !== 'ready') await waitForModels(60000);
+        state.analysisProgress = 64;
+        render();
+        const useClassifier = ['hybrid', 'mobilenet'].includes(activeModel);
+        const useDetector = ['hybrid', 'coco'].includes(activeModel);
+        const detector = useDetector ? await ensureCocoDetector() : null;
+        const [classification, detection] = await Promise.allSettled([
+          useClassifier && state.models.classifier ? state.models.classifier.classify(canvas) : Promise.resolve([]),
+          detector ? detector.detect(canvas) : Promise.resolve([]),
+        ]);
+        predictions = classification.status === 'fulfilled' ? classification.value : [];
+        detections = detection.status === 'fulfilled' ? detection.value : [];
+        modelVersion = activeModel === 'coco' && state.models.yoloFallback
+          ? 'COCO-SSD Lite (fallback)'
+          : activeModel === 'coco' ? 'COCO-SSD Lite'
+          : activeModel === 'mobilenet' ? 'MobileNet V2'
+          : 'MobileNet + COCO-SSD';
+      }
+
+      const sortedDetections = [...detections].sort((a, b) => b.score - a.score);
+      const top = sortedDetections[0];
+      const topPrediction = predictions[0];
+      const label = top?.class || topPrediction?.className?.split(',')[0] || 'Không xác định';
+      const rawConfidence = top?.score || topPrediction?.probability || 0;
+      const confidence = rawConfidence >= state.modelPreferences.threshold ? rawConfidence : 0;
+      state.analysisProgress = 100;
+      render();
+      state.currentResult = {
+        primary_label: label,
+        confidence,
+        description: confidence
+          ? `Vision AI nhận diện “${label}” với độ tin cậy ${pct(confidence)}. Hãy xác nhận hoặc chỉnh sửa nếu cần.`
+          : 'Không thể xác định rõ nội dung ảnh. Hãy thử ảnh có ánh sáng tốt hơn.',
+        predictions,
+        detections: sortedDetections,
+        model_version: modelVersion,
         processing_time_ms: Math.round(performance.now() - started),
         width: image.naturalWidth,
         height: image.naturalHeight,
@@ -1175,10 +1362,30 @@
     toast('Đã xóa cache giao diện. Dữ liệu tài khoản không bị xóa.');
   }
 
-  function selectModel(model) {
-    if (!['hybrid', 'mobilenet', 'coco'].includes(model)) return;
+  async function selectModel(model) {
+    if (!['hybrid', 'mobilenet', 'coco', 'yolo'].includes(model)) return;
+    if (model === 'yolo' && (yoloDeviceAssessment().weak || state.modelPreferences.powerSave)) {
+      state.models.yoloStatus = 'fallback';
+      state.models.yoloFallback = true;
+      state.models.yoloError = 'Thiết bị cấu hình thấp hoặc đang bật chế độ tiết kiệm dữ liệu.';
+      state.modelPreferences.active = 'coco';
+      localStorage.setItem('vision-active-model', 'coco');
+      await ensureCocoDetector().catch(() => null);
+      toast('Máy này phù hợp với COCO-SSD hơn; YOLO sẽ không được tải.', 'error');
+      render();
+      return;
+    }
     state.modelPreferences.active = model;
     localStorage.setItem('vision-active-model', model);
+    if (model === 'yolo') {
+      toast('Đang tải YOLOv8 Nano lần đầu...');
+      const ready = await ensureYoloLoaded();
+      if (!ready) toast('Đã tự động chuyển sang COCO-SSD.', 'error');
+      else toast(`YOLO sẵn sàng qua ${state.models.yoloProvider.toUpperCase()}.`);
+      render();
+      return;
+    }
+    state.models.yoloFallback = false;
     toast('Đã đổi mô hình nhận diện.');
     render();
   }

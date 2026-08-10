@@ -77,11 +77,14 @@ def scan_response(scan: Scan) -> ScanResponse:
 
 def collection_response(db: Session, collection: Collection) -> CollectionResponse:
     count = db.scalar(
-        select(func.count(CollectionItem.id)).where(CollectionItem.collection_id == collection.id)
+        select(func.count(CollectionItem.id))
+        .join(Scan, Scan.id == CollectionItem.scan_id)
+        .where(CollectionItem.collection_id == collection.id, Scan.user_id == collection.user_id)
     ) or 0
     cover_scan_id = db.scalar(
         select(CollectionItem.scan_id)
-        .where(CollectionItem.collection_id == collection.id)
+        .join(Scan, Scan.id == CollectionItem.scan_id)
+        .where(CollectionItem.collection_id == collection.id, Scan.user_id == collection.user_id)
         .order_by(CollectionItem.added_at.desc())
         .limit(1)
     )
@@ -328,11 +331,15 @@ def list_collection_scans(
 ) -> ScanPage:
     get_collection_or_404(db, collection_id, user.id)
     condition = CollectionItem.collection_id == collection_id
-    total = db.scalar(select(func.count(CollectionItem.id)).where(condition)) or 0
+    total = db.scalar(
+        select(func.count(CollectionItem.id))
+        .join(Scan, Scan.id == CollectionItem.scan_id)
+        .where(condition, Scan.user_id == user.id)
+    ) or 0
     scans = db.scalars(
         select(Scan)
         .join(CollectionItem, CollectionItem.scan_id == Scan.id)
-        .where(condition)
+        .where(condition, Scan.user_id == user.id)
         .order_by(CollectionItem.added_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
