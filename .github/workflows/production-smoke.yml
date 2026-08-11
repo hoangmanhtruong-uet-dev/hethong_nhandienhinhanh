@@ -20,6 +20,7 @@ jobs:
       VISION_AI_SMOKE_URL: https://hethong-nhandienhinhanh.onrender.com
       EXPECTED_COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
       SMOKE_TIMEOUT_MS: "720000"
+      VISION_AI_SMOKE_REQUIRE_GEMINI: "true"
     steps:
       - uses: actions/checkout@v4
         with:

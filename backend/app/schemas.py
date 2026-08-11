@@ -151,6 +151,35 @@ class UserRoleUpdate(BaseModel):
     role: Literal["owner", "admin", "member", "viewer"]
 
 
+class AdvancedAnalysisObject(BaseModel):
+    label: str = Field(min_length=1, max_length=160)
+    box_2d: list[int] = Field(min_length=4, max_length=4)
+
+    @field_validator("box_2d")
+    @classmethod
+    def validate_box(cls, value: list[int]) -> list[int]:
+        if any(point < 0 or point > 1000 for point in value):
+            raise ValueError("Tọa độ box_2d phải nằm trong khoảng 0..1000.")
+        ymin, xmin, ymax, xmax = value
+        if ymin >= ymax or xmin >= xmax:
+            raise ValueError("box_2d không tạo thành hình chữ nhật hợp lệ.")
+        return value
+
+
+class AdvancedAnalysisContent(BaseModel):
+    primary_label: str = Field(min_length=1, max_length=255)
+    description: str = Field(min_length=1, max_length=2000)
+    categories: list[str] = Field(default_factory=list, max_length=8)
+    objects: list[AdvancedAnalysisObject] = Field(default_factory=list, max_length=20)
+    visible_text: list[str] = Field(default_factory=list, max_length=20)
+    suggested_actions: list[str] = Field(default_factory=list, max_length=6)
+
+
+class AdvancedAnalysisResponse(AdvancedAnalysisContent):
+    model: str
+    processing_time_ms: int = Field(ge=0, le=3_600_000)
+
+
 class ScanCreate(BaseModel):
     primary_label: str = Field(min_length=1, max_length=255)
     confidence: float = Field(ge=0, le=1)
@@ -169,6 +198,8 @@ class ScanUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=5000)
     predictions: list[dict[str, Any]] | None = None
     detections: list[dict[str, Any]] | None = None
+    model_version: str | None = Field(default=None, min_length=1, max_length=100)
+    processing_time_ms: int | None = Field(default=None, ge=0, le=3_600_000)
     confirmed: bool | None = None
     favorite: bool | None = None
 

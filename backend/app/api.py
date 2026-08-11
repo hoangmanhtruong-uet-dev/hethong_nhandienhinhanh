@@ -7,19 +7,27 @@ import os
 from datetime import timedelta
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import ValidationError
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .auth import CurrentUser
+from .auth import CurrentUser, enforce_rate_limit, record_security_event
 from .config import get_settings
 from .database import get_db
+from .gemini import (
+    GeminiNotConfiguredError,
+    GeminiQuotaError,
+    GeminiUpstreamError,
+    analyze_with_gemini,
+    prepare_image,
+)
 from .models import Collection, CollectionItem, Feedback, ModelEvaluation, Scan, User, UserSettings, utc_now
 from .schemas import (
     AddScanRequest,
+    AdvancedAnalysisResponse,
     CollectionCreate,
     CollectionResponse,
     CollectionUpdate,
@@ -139,12 +147,60 @@ def readiness(db: DbSession) -> dict:
     if (settings.require_smtp and not settings.smtp_host) or (settings.require_email_provider and email_provider == "none"):
         raise HTTPException(status_code=503, detail={"status": "not_ready", "email": "Email provider is required but not configured."})
     checks["email"] = {"status": "ok" if email_provider != "none" else "optional", "provider": email_provider}
+    checks["advanced_ai"] = {
+        "status": "ok" if settings.gemini_api_key else "optional",
+        "provider": "gemini" if settings.gemini_api_key else "none",
+        "model": settings.gemini_model if settings.gemini_api_key else "local-only",
+    }
     release_commit = os.getenv("RENDER_GIT_COMMIT", "local").strip() or "local"
     return {
         "status": "ready",
         "checks": checks,
         "release": {"commit": release_commit[:12]},
     }
+
+
+@router.post("/analysis/advanced", response_model=AdvancedAnalysisResponse, tags=["models"])
+async def advanced_analysis(
+    request: Request,
+    db: DbSession,
+    user: CurrentUser,
+    file: Annotated[UploadFile, File(description="Ảnh JPEG, PNG hoặc WebP để phân tích một lần bằng Gemini")],
+) -> AdvancedAnalysisResponse:
+    enforce_rate_limit(
+        db,
+        request,
+        "gemini_analysis_requested",
+        user.id,
+        settings.gemini_requests_per_hour,
+        timedelta(hours=1),
+    )
+    try:
+        image_bytes, mime_type = await prepare_image(file)
+        result = await analyze_with_gemini(image_bytes, mime_type)
+    except GeminiNotConfiguredError as exc:
+        record_security_event(db, request, "gemini_analysis_requested", "failure", user=user, identifier=user.id, details={"reason": "not_configured"})
+        raise HTTPException(status_code=503, detail="Phân tích AI nâng cao chưa được cấu hình.") from exc
+    except GeminiQuotaError as exc:
+        record_security_event(db, request, "gemini_analysis_requested", "failure", user=user, identifier=user.id, details={"reason": "quota"})
+        raise HTTPException(status_code=429, detail="Gemini đang hết quota. Kết quả local vẫn được giữ nguyên.", headers={"Retry-After": "3600"}) from exc
+    except GeminiUpstreamError as exc:
+        record_security_event(db, request, "gemini_analysis_requested", "failure", user=user, identifier=user.id, details={"reason": "upstream"})
+        raise HTTPException(status_code=502, detail=f"{exc} Kết quả local vẫn được giữ nguyên.") from exc
+    except ValueError as exc:
+        record_security_event(db, request, "gemini_analysis_requested", "failure", user=user, identifier=user.id, details={"reason": "invalid_image"})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    record_security_event(
+        db,
+        request,
+        "gemini_analysis_requested",
+        "success",
+        user=user,
+        identifier=user.id,
+        details={"model": result.model, "processing_time_ms": result.processing_time_ms},
+    )
+    return result
 
 
 @router.post("/scans", response_model=ScanResponse, status_code=status.HTTP_201_CREATED, tags=["scans"])

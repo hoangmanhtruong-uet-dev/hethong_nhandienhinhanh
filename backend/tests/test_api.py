@@ -21,6 +21,8 @@ from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 
 from app.main import app  # noqa: E402
+import app.api as api_module  # noqa: E402
+from app.schemas import AdvancedAnalysisResponse  # noqa: E402
 
 
 alembic_config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
@@ -292,6 +294,50 @@ def test_readiness_and_model_evaluation_are_account_scoped() -> None:
         summary = user_a.get("/api/model-evaluations/summary").json()
         assert summary[0]["accuracy"] == 1.0
         assert user_b.get("/api/model-evaluations").json() == []
+
+
+def test_advanced_analysis_is_authenticated_rate_limited_and_does_not_persist(monkeypatch) -> None:
+    async def fake_gemini(_image_bytes: bytes, mime_type: str) -> AdvancedAnalysisResponse:
+        assert mime_type == "image/jpeg"
+        return AdvancedAnalysisResponse(
+            primary_label="Bàn phím cơ",
+            description="Một bàn phím cơ màu tối đặt trên bàn.",
+            categories=["Công nghệ", "Thiết bị nhập liệu"],
+            objects=[{"label": "bàn phím", "box_2d": [120, 80, 880, 920]}],
+            visible_text=[],
+            suggested_actions=["Kiểm tra bố cục phím"],
+            model="gemini-test",
+            processing_time_ms=123,
+        )
+
+    monkeypatch.setattr(api_module, "analyze_with_gemini", fake_gemini)
+    monkeypatch.setattr(api_module.settings, "gemini_requests_per_hour", 1)
+
+    with TestClient(app) as anonymous:
+        denied = anonymous.post(
+            "/api/analysis/advanced",
+            files={"file": ("keyboard.png", png_file(), "image/png")},
+        )
+        assert denied.status_code == 401
+
+    with TestClient(app) as client:
+        register(client, "gemini-analysis@example.com")
+        result = client.post(
+            "/api/analysis/advanced",
+            files={"file": ("keyboard.png", png_file(), "image/png")},
+        )
+        assert result.status_code == 200, result.text
+        assert result.json()["primary_label"] == "Bàn phím cơ"
+        assert result.json()["objects"][0]["box_2d"] == [120, 80, 880, 920]
+        assert client.get("/api/scans").json()["total"] == 0
+
+        blocked = client.post(
+            "/api/analysis/advanced",
+            files={"file": ("keyboard.png", png_file(), "image/png")},
+        )
+        assert blocked.status_code == 429
+        events = client.get("/api/auth/security-events").json()
+        assert any(item["event_type"] == "gemini_analysis_requested" and item["outcome"] == "success" for item in events)
 
 
 def test_account_email_password_and_deletion_lifecycle() -> None:

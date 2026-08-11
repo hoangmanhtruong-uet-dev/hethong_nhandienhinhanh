@@ -79,6 +79,7 @@
     modelStats: [],
     modelStatsLoaded: false,
     analysisProgress: 12,
+    advancedAnalyzing: false,
     backendOnline: null,
     authChecked: false,
     user: null,
@@ -337,11 +338,29 @@
     return shell(`<main class="page processing-page"><div><div class="processing-orb">${icon('neurology')}</div><div class="eyebrow">Neural processing</div><h2>Đang phân tích hình ảnh...</h2><p class="lead">Mô hình Vision AI đang trích xuất đặc trưng và nhận diện vật thể.</p><div class="progress"><span style="--progress:${state.analysisProgress}%"></span></div><p class="mono tiny muted">${state.analysisProgress}% · MobileNet / COCO-SSD</p></div></main>`, { title: 'Đang xử lý AI' });
   }
 
+  function advancedAnalysisCard(result) {
+    const cloudEnhanced = result.cloud_enhanced || String(result.model_version || '').includes('+ Gemini');
+    if (cloudEnhanced) {
+      const storedCategories = (result.predictions || [])
+        .filter(item => item.source === 'gemini-category')
+        .map(item => item.className);
+      const categories = (result.cloud_categories || storedCategories).map(item => `<span class="tag active">${esc(item)}</span>`).join('');
+      const visibleText = result.visible_text?.length
+        ? `<p class="tiny"><strong>Chữ đọc được:</strong> ${esc(result.visible_text.join(' · '))}</p>`
+        : '';
+      const actions = result.suggested_actions?.length
+        ? `<p class="tiny"><strong>Gợi ý:</strong> ${esc(result.suggested_actions.join(' · '))}</p>`
+        : '';
+      return `<div class="card" style="margin-top:14px;border-color:var(--cyan)"><div class="row between"><div><div class="eyebrow">Gemini Cloud · Tùy chọn</div><h3 style="margin:5px 0">Đã phân tích nâng cao</h3></div>${icon('cloud_done')}</div><div class="tag-list">${categories}<span class="tag">${esc(result.cloud_model || 'Gemini')}</span></div>${visibleText}${actions}<p class="tiny muted">Nhãn và mô tả đã được bổ sung bởi AI cloud. Độ tin cậy hiển thị vẫn là điểm của model local.</p></div>`;
+    }
+    return `<div class="card" style="margin-top:14px"><div class="row between"><div><div class="eyebrow">Gemini Cloud · Tùy chọn</div><h3 style="margin:5px 0">Nhận diện chưa chính xác?</h3></div>${icon('auto_awesome')}</div><p class="tiny muted">Chỉ gửi một bản ảnh đã nén khi bạn bấm nút. API key được giữ trên máy chủ; nếu lỗi hoặc hết quota, kết quả local không bị thay đổi.</p><button class="btn btn-primary btn-block" data-action="advanced-analysis" ${state.advancedAnalyzing ? 'disabled' : ''}>${icon(state.advancedAnalyzing ? 'progress_activity' : 'auto_awesome')} ${state.advancedAnalyzing ? 'Đang hỏi Gemini...' : 'Phân tích AI nâng cao'}</button></div>`;
+  }
+
   function resultPage() {
     const result = state.currentResult;
     if (!result) return noResultPage();
     const tags = (result.predictions || []).slice(0, 3).map(item => `<span class="tag active">${esc((item.className || item.class || '').split(',')[0])}</span>`).join('');
-    return shell(`<main class="page">${imageBlock(result)}
+    return shell(`<main class="page">${imageBlock(result)}${advancedAnalysisCard(result)}
       <div class="card"><div class="row"><div class="confidence-ring" style="--score:${Math.round(result.confidence * 100)}%" data-score="${pct(result.confidence)}"></div><div><div class="eyebrow">Nhận diện chính</div><h2 style="margin:5px 0 4px">${esc(result.primary_label)}</h2><div class="tag-list">${tags || '<span class="tag">AI Vision</span>'}</div></div></div><p class="lead" style="margin-top:14px">${esc(result.description)}</p></div>
       <div class="section-title"><span>Thông tin quét</span></div><div class="metadata"><div><small>Thời gian xử lý</small><strong>${result.processing_time_ms || 0} ms</strong></div><div><small>Mô hình AI</small><strong>${esc(result.model_version)}</strong></div><div><small>Kích thước</small><strong>${result.width || '—'} × ${result.height || '—'}</strong></div><div><small>Trạng thái</small><strong>${result.confirmed ? 'Đã xác nhận' : 'Chưa xác nhận'}</strong></div></div>
       <div class="button-grid" style="margin-top:14px"><button class="btn btn-primary" data-action="save-scan">${icon('bookmark_add')} ${result.id ? 'Đã lưu' : 'Lưu lịch sử'}</button><button class="btn btn-secondary" data-go="edit">${icon('edit')} Sửa nhãn</button><button class="btn btn-ghost" data-go="share">${icon('ios_share')} Chia sẻ</button><button class="btn btn-ghost" data-action="new-scan">${icon('refresh')} Quét lại</button></div><button class="btn btn-ghost btn-block" style="margin-top:9px" data-action="save-collection">${icon('collections_bookmark')} Lưu vào bộ sưu tập</button>
@@ -962,6 +981,118 @@
       console.error(error);
       toast('Mô hình AI chưa sẵn sàng. Hãy thử lại.', 'error');
       go('offline');
+    }
+  }
+
+  async function compressedCloudImage() {
+    let source = state.currentFile;
+    if (!source && state.currentResult?.image_url) {
+      const response = await fetch(mediaUrl(state.currentResult.image_url), { credentials: 'include' });
+      if (!response.ok) throw new Error('Không tải được ảnh đã lưu để phân tích.');
+      source = await response.blob();
+    }
+    if (!source) throw new Error('Không có ảnh để phân tích nâng cao.');
+
+    const objectUrl = URL.createObjectURL(source);
+    try {
+      const image = await new Promise((resolve, reject) => {
+        const node = new Image();
+        node.onload = () => resolve(node);
+        node.onerror = () => reject(new Error('Không đọc được ảnh để nén.'));
+        node.src = objectUrl;
+      });
+      const canvas = document.createElement('canvas');
+      const scale = Math.min(1, 1024 / Math.max(image.naturalWidth, image.naturalHeight));
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((resolve, reject) => canvas.toBlob(
+        value => value ? resolve(value) : reject(new Error('Không nén được ảnh.')),
+        'image/jpeg',
+        .84,
+      ));
+      return new File([blob], `gemini-${Date.now()}.jpg`, { type: 'image/jpeg' });
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  async function advancedAnalyze() {
+    if (!state.currentResult || state.advancedAnalyzing) return;
+    state.advancedAnalyzing = true;
+    render();
+    try {
+      const file = await compressedCloudImage();
+      const form = new FormData();
+      form.append('file', file);
+      const enhanced = await api('/analysis/advanced', { method: 'POST', body: form });
+      const width = Number(state.currentResult.width || 1);
+      const height = Number(state.currentResult.height || 1);
+      const cloudDetections = (enhanced.objects || []).map(object => {
+        const [ymin, xmin, ymax, xmax] = object.box_2d;
+        return {
+          class: object.label,
+          score: null,
+          bbox: [
+            Math.round(xmin * width / 1000),
+            Math.round(ymin * height / 1000),
+            Math.round((xmax - xmin) * width / 1000),
+            Math.round((ymax - ymin) * height / 1000),
+          ],
+          box_2d: object.box_2d,
+          source: 'gemini',
+        };
+      });
+      const localModel = String(state.currentResult.model_version || 'Local AI').split(' + Gemini')[0];
+      const next = {
+        ...state.currentResult,
+        primary_label: enhanced.primary_label,
+        description: enhanced.description,
+        predictions: [
+          { className: enhanced.primary_label, probability: state.currentResult.confidence, source: 'gemini' },
+          ...(enhanced.categories || []).map(className => ({ className, probability: null, source: 'gemini-category' })),
+          ...(state.currentResult.predictions || []),
+        ].slice(0, 12),
+        detections: [...cloudDetections, ...(state.currentResult.detections || [])].slice(0, 30),
+        model_version: `${localModel} + Gemini ${enhanced.model}`.slice(0, 100),
+        processing_time_ms: Number(state.currentResult.processing_time_ms || 0) + Number(enhanced.processing_time_ms || 0),
+        cloud_enhanced: true,
+        cloud_model: enhanced.model,
+        cloud_categories: enhanced.categories || [],
+        visible_text: enhanced.visible_text || [],
+        suggested_actions: enhanced.suggested_actions || [],
+      };
+      if (next.id) {
+        const saved = await api(`/scans/${next.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            primary_label: next.primary_label,
+            description: next.description,
+            predictions: next.predictions,
+            detections: next.detections,
+            model_version: next.model_version,
+            processing_time_ms: next.processing_time_ms,
+          }),
+        });
+        state.currentResult = {
+          ...next,
+          ...saved,
+          cloud_enhanced: true,
+          cloud_model: enhanced.model,
+          cloud_categories: enhanced.categories || [],
+          visible_text: enhanced.visible_text || [],
+          suggested_actions: enhanced.suggested_actions || [],
+        };
+      } else {
+        state.currentResult = next;
+      }
+      toast('Gemini đã bổ sung nhãn và mô tả thông minh hơn.');
+    } catch (error) {
+      toast(`${error.message || 'Gemini chưa phản hồi.'} Đã giữ nguyên kết quả local.`, 'error');
+    } finally {
+      state.advancedAnalyzing = false;
+      render();
     }
   }
 
@@ -1588,6 +1719,7 @@
       if (action === 'capture') captureFrame();
       if (action === 'flip-camera') { toast('Đang đổi camera...'); await requestCamera({ flip: true }); }
       if (action === 'save-scan') saveCurrentScan();
+      if (action === 'advanced-analysis') advancedAnalyze();
       if (action === 'save-collection') saveToCollection();
       if (action === 'new-scan') { state.currentResult = null; state.currentFile = null; go('scanner'); }
       if (action === 'create-collection') createCollection();

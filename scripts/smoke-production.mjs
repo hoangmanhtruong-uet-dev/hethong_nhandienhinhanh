@@ -1,5 +1,6 @@
 const baseUrl = (process.env.VISION_AI_SMOKE_URL || process.argv[2] || '').replace(/\/$/, '');
 const expectedCommit = (process.env.EXPECTED_COMMIT || '').trim().slice(0, 12);
+const requireGemini = process.env.VISION_AI_SMOKE_REQUIRE_GEMINI === 'true';
 const timeoutMs = Number(process.env.SMOKE_TIMEOUT_MS || 12 * 60 * 1000);
 const pollMs = Number(process.env.SMOKE_POLL_MS || 15 * 1000);
 
@@ -30,6 +31,9 @@ async function waitForRelease() {
       const health = await response.json();
       const deployedCommit = String(health.release?.commit || '');
       if (health.status !== 'ready') throw new Error(`Readiness status is ${health.status}.`);
+      if (requireGemini && health.checks?.advanced_ai?.provider !== 'gemini') {
+        throw new Error('Gemini is required but is not configured on Render.');
+      }
       if (!expectedCommit || deployedCommit === expectedCommit) return health;
       lastError = `Render is still on ${deployedCommit || 'an older release'}; waiting for ${expectedCommit}.`;
     } catch (error) {
@@ -62,4 +66,5 @@ process.stdout.write(`${JSON.stringify({
   checks: health.checks,
   pwa: { manifest: 'ok', service_worker: 'ok' },
   authentication: 'protected',
+  advanced_ai: health.checks?.advanced_ai || { status: 'unknown' },
 }, null, 2)}\n`);

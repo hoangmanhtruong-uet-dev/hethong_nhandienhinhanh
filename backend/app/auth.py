@@ -109,7 +109,10 @@ def enforce_rate_limit(
         SecurityEvent.event_type == event_type,
         SecurityEvent.created_at >= since,
     ]
-    if event_type not in {"registration_attempt", "password_reset_requested", "email_verification_requested"}:
+    if event_type not in {
+        "registration_attempt", "password_reset_requested", "email_verification_requested",
+        "gemini_analysis_requested",
+    }:
         base_filters.append(SecurityEvent.outcome == "failure")
     ip_address = client_ip(request)
     scoped_attempts = db.scalar(select(func.count(SecurityEvent.id)).where(

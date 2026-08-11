@@ -36,3 +36,9 @@ services:
         sync: false
       - key: VISION_AI_REQUIRE_EMAIL_PROVIDER
         value: "true"
+      - key: VISION_AI_GEMINI_API_KEY
+        sync: false
+      - key: VISION_AI_GEMINI_MODEL
+        value: gemini-3.5-flash
+      - key: VISION_AI_GEMINI_REQUESTS_PER_HOUR
+        value: "20"

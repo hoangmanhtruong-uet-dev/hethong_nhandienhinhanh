@@ -14,6 +14,25 @@ $env:VISION_AI_SMOKE_URL="https://hethong-nhandienhinhanh.onrender.com"
 npm run smoke:production
 ```
 
+## Optional Gemini image enhancement
+
+Gemini is an explicit, one-shot cloud enhancement. Local YOLO/COCO detection runs first;
+the browser sends a compressed 1024px copy only after the signed-in user chooses
+`Phân tích AI nâng cao`. The API key never reaches browser JavaScript.
+
+Configure these Render environment variables:
+
+```dotenv
+VISION_AI_GEMINI_API_KEY=AIza...
+VISION_AI_GEMINI_MODEL=gemini-3.5-flash
+VISION_AI_GEMINI_REQUESTS_PER_HOUR=20
+```
+
+The backend validates and recompresses the image, enforces an account/IP rate limit,
+requests structured JSON, and keeps the local result unchanged on timeout, quota, or
+provider failure. Free-tier images may be used by the provider to improve its products,
+so cloud analysis must remain opt-in.
+
 The production stack contains one FastAPI container and Caddy as the HTTPS reverse proxy. PostgreSQL remains on Aiven and images remain on Cloudinary.
 
 ## Prerequisites

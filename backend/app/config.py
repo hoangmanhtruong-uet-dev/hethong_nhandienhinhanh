@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     resend_api_key: str | None = None
     require_email_provider: bool = False
     account_token_minutes: int = Field(default=30, ge=5, le=1440)
+    gemini_api_key: str | None = None
+    gemini_model: str = Field(default="gemini-3.5-flash", pattern=r"^[A-Za-z0-9._-]+$")
+    gemini_timeout_seconds: int = Field(default=35, ge=5, le=120)
+    gemini_requests_per_hour: int = Field(default=20, ge=1, le=200)
 
     model_config = SettingsConfigDict(
         env_file=BACKEND_DIR / ".env",
