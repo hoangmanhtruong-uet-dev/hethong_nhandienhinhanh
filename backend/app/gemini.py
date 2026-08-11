@@ -33,6 +33,16 @@ class GeminiUpstreamError(GeminiError):
     pass
 
 
+def _provider_error(response: httpx.Response) -> str:
+    try:
+        message = str(response.json().get("error", {}).get("message", "")).strip()
+    except (TypeError, ValueError):
+        message = ""
+    if not message:
+        return "không có thông tin chi tiết"
+    return " ".join(message.split())[:300]
+
+
 async def prepare_image(upload: UploadFile) -> tuple[bytes, str]:
     settings = get_settings()
     if upload.content_type not in ALLOWED_MIME_TYPES:
@@ -137,7 +147,9 @@ async def analyze_with_gemini(image_bytes: bytes, mime_type: str) -> AdvancedAna
     if response.status_code == 429:
         raise GeminiQuotaError("Gemini đã hết quota tạm thời.")
     if response.status_code >= 400:
-        raise GeminiUpstreamError(f"Gemini từ chối yêu cầu ({response.status_code}).")
+        raise GeminiUpstreamError(
+            f"Gemini từ chối yêu cầu ({response.status_code}: {_provider_error(response)})."
+        )
 
     try:
         payload = response.json()
