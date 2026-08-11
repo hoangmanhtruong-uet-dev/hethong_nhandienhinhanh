@@ -22,6 +22,7 @@ from alembic.config import Config  # noqa: E402
 
 from app.main import app  # noqa: E402
 import app.api as api_module  # noqa: E402
+from app.gemini import _response_schema  # noqa: E402
 from app.schemas import AdvancedAnalysisResponse  # noqa: E402
 
 
@@ -338,6 +339,13 @@ def test_advanced_analysis_is_authenticated_rate_limited_and_does_not_persist(mo
         assert blocked.status_code == 429
         events = client.get("/api/auth/security-events").json()
         assert any(item["event_type"] == "gemini_analysis_requested" and item["outcome"] == "success" for item in events)
+
+
+def test_gemini_schema_only_uses_supported_string_constraints() -> None:
+    serialized = json.dumps(_response_schema())
+    assert "minLength" not in serialized
+    assert "maxLength" not in serialized
+    assert "default" not in serialized
 
 
 def test_account_email_password_and_deletion_lifecycle() -> None:

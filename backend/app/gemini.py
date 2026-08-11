@@ -72,6 +72,21 @@ async def prepare_image(upload: UploadFile) -> tuple[bytes, str]:
 def _response_schema() -> dict:
     schema = AdvancedAnalysisContent.model_json_schema()
     schema.pop("title", None)
+    # generateContent accepts only a subset of JSON Schema. Pydantic emits
+    # string length constraints that Gemini currently rejects with HTTP 400,
+    # while the same limits are still enforced when validating the response.
+    def remove_unsupported(value: object) -> None:
+        if isinstance(value, dict):
+            value.pop("minLength", None)
+            value.pop("maxLength", None)
+            value.pop("default", None)
+            for child in value.values():
+                remove_unsupported(child)
+        elif isinstance(value, list):
+            for child in value:
+                remove_unsupported(child)
+
+    remove_unsupported(schema)
     return schema
 
 
