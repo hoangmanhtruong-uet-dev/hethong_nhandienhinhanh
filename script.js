@@ -64,6 +64,7 @@
     cameraDeviceId: null,
     cameraDevices: [],
     cameraSwitching: false,
+    cameraError: '',
     currentFile: null,
     currentImageUrl: '',
     currentResult: null,
@@ -143,15 +144,48 @@
   }
 
   async function api(path, options = {}) {
-    const response = await fetch(`${API_BASE}${path}`, { credentials: 'include', ...options });
+    const { timeoutMs = path === '/analysis/advanced' ? 60000 : 30000, ...fetchOptions } = options;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    try {
+      response = await fetch(`${API_BASE}${path}`, {
+        credentials: 'include',
+        ...fetchOptions,
+        signal: controller.signal,
+      });
+      state.backendOnline = true;
+    } catch (cause) {
+      state.backendOnline = false;
+      const offline = !navigator.onLine || cause instanceof TypeError;
+      const error = new Error(cause?.name === 'AbortError'
+        ? 'Máy chủ phản hồi quá chậm. Hãy thử lại sau.'
+        : offline
+          ? 'Không có kết nối mạng. Kết quả xử lý trên máy vẫn được giữ.'
+          : 'Không thể kết nối máy chủ.');
+      error.code = cause?.name === 'AbortError' ? 'client_timeout' : 'network_error';
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
     if (!response.ok) {
       let detail = `Lỗi ${response.status}`;
+      let code = `http_${response.status}`;
+      let requestId = response.headers.get('x-request-id') || '';
       try {
         const body = await response.json();
         detail = typeof body.detail === 'string' ? body.detail : detail;
+        code = body.code || code;
+        requestId = body.request_id || requestId;
       } catch (_) { /* response is not JSON */ }
+      if (response.status === 429 && detail === `Lỗi ${response.status}`) detail = 'Quá nhiều yêu cầu. Hãy đợi rồi thử lại.';
+      if ([502, 503].includes(response.status) && detail === `Lỗi ${response.status}`) detail = 'Dịch vụ phụ trợ đang gián đoạn. Hãy thử lại sau.';
+      if (response.status === 504 && detail === `Lỗi ${response.status}`) detail = 'Máy chủ xử lý quá thời gian.';
       const error = new Error(detail);
       error.status = response.status;
+      error.code = code;
+      error.requestId = requestId;
+      error.retryAfter = Number(response.headers.get('retry-after') || 0);
       throw error;
     }
     const type = response.headers.get('content-type') || '';
@@ -331,6 +365,7 @@
     </div>
     <div class="capture-bar"><button class="mini-shot" data-action="pick-file" aria-label="Tải ảnh">${icon('image')}</button><button class="capture" data-action="capture" aria-label="Chụp ảnh"></button><button class="mini-shot" data-action="flip-camera" aria-label="Đổi camera" ${state.cameraSwitching ? 'disabled' : ''}>${icon(state.cameraSwitching ? 'progress_activity' : 'cameraswitch')}</button></div>
     <input id="scanner-file" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+    ${state.cameraError ? `<div class="card" style="margin-top:12px;border-color:var(--danger)"><div class="row">${icon('videocam_off')}<div><strong>Camera chưa sẵn sàng</strong><p class="tiny muted">${esc(state.cameraError)} Bạn vẫn có thể tải ảnh từ máy.</p></div></div></div>` : ''}
     <div class="row between" style="margin-top:14px"><span class="tiny mono muted"><i class="status-dot ${state.models.status === 'ready' ? 'ready' : ''}"></i> ${state.stream ? (state.cameraFacingMode === 'user' ? 'CAMERA TRƯỚC' : 'CAMERA SAU') : (state.models.status === 'ready' ? 'AI READY' : 'LOADING MODELS')}</span><button class="btn btn-ghost" data-action="start-camera">${icon('videocam')} Camera</button></div>
     </main>`, { title: 'Scanner AI' });
   }
@@ -675,10 +710,26 @@
     return { video, audio: false };
   }
 
+  function cameraErrorMessage(error) {
+    const messages = {
+      NotAllowedError: 'Quyền camera đang bị từ chối. Hãy bật quyền trong cài đặt trình duyệt hoặc điện thoại.',
+      SecurityError: 'Camera chỉ hoạt động trên kết nối HTTPS an toàn.',
+      NotFoundError: 'Thiết bị không tìm thấy camera phù hợp.',
+      DevicesNotFoundError: 'Thiết bị không có camera hoặc camera đã bị ngắt kết nối.',
+      NotReadableError: 'Camera đang bận, bị hệ điều hành khóa hoặc có lỗi phần cứng.',
+      TrackStartError: 'Camera đang được ứng dụng khác sử dụng.',
+      OverconstrainedError: 'Camera không hỗ trợ cấu hình hình ảnh được yêu cầu.',
+      AbortError: 'Hệ điều hành đã dừng quá trình mở camera.',
+    };
+    return messages[error?.name] || 'Không thể khởi động camera. Hãy thử tải ảnh từ máy.';
+  }
+
   async function requestCamera({ flip = false } = {}) {
     if (state.cameraSwitching) return;
     if (!navigator.mediaDevices?.getUserMedia) {
-      toast('Trình duyệt không hỗ trợ camera.', 'error');
+      state.cameraError = 'Trình duyệt hoặc thiết bị này không hỗ trợ truy cập camera.';
+      render();
+      toast(state.cameraError, 'error');
       return;
     }
 
@@ -689,6 +740,7 @@
       : previousFacingMode;
 
     state.cameraSwitching = true;
+    state.cameraError = '';
     try {
       const knownDevices = await listVideoDevices();
       const selectedDevice = flip && knownDevices.length > 1
@@ -720,12 +772,21 @@
       if (!stream) throw lastError || new Error('Không tìm thấy camera phù hợp.');
 
       state.stream = stream;
-      const settings = stream.getVideoTracks()[0]?.getSettings?.() || {};
+      const videoTrack = stream.getVideoTracks()[0];
+      const settings = videoTrack?.getSettings?.() || {};
+      videoTrack?.addEventListener('ended', () => {
+        if (state.stream !== stream) return;
+        state.stream = null;
+        state.cameraError = 'Camera đã ngắt kết nối hoặc bị hệ điều hành dừng.';
+        render();
+        toast(state.cameraError, 'error');
+      }, { once: true });
       state.cameraDeviceId = settings.deviceId || selectedDevice?.deviceId || null;
       state.cameraFacingMode = ['user', 'environment'].includes(settings.facingMode)
         ? settings.facingMode
         : desiredFacingMode;
       state.cameraDevices = await listVideoDevices();
+      state.cameraError = '';
       localStorage.setItem('vision-camera-facing', state.cameraFacingMode);
       localStorage.setItem('vision-onboarded', '1');
       state.cameraSwitching = false;
@@ -738,9 +799,8 @@
       state.cameraDeviceId = previousDeviceId;
       state.cameraSwitching = false;
       render();
-      const reason = error?.name === 'NotAllowedError'
-        ? 'Bạn chưa cấp quyền camera cho trình duyệt.'
-        : 'Không đổi được camera. Hãy đóng ứng dụng khác đang dùng camera và thử lại.';
+      const reason = cameraErrorMessage(error);
+      state.cameraError = reason;
       toast(reason, 'error');
     }
   }
@@ -1847,7 +1907,15 @@
     toast('Vision AI đã được cài trên thiết bị.');
     if (state.route === 'install') render();
   });
-  window.addEventListener('online', () => { state.backendOnline = true; if (state.route === 'sync') checkBackend().then(render); });
-  window.addEventListener('offline', () => { state.backendOnline = false; if (state.route === 'sync') render(); });
+  window.addEventListener('online', () => {
+    state.backendOnline = true;
+    toast('Đã có kết nối mạng trở lại.');
+    checkBackend().then(() => { if (state.route === 'sync') render(); });
+  });
+  window.addEventListener('offline', () => {
+    state.backendOnline = false;
+    toast('Đã mất mạng. AI trên thiết bị vẫn dùng được; đồng bộ và Gemini tạm dừng.', 'error');
+    if (state.route === 'sync') render();
+  });
   bootstrap();
 })();

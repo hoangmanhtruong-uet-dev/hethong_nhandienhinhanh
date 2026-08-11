@@ -302,19 +302,25 @@ def update_scan(scan_id: str, payload: ScanUpdate, db: DbSession, user: CurrentU
 def remove_scan(scan_id: str, db: DbSession, user: CurrentUser) -> MessageResponse:
     scan = get_scan_or_404(db, scan_id, user.id)
     stored_name = scan.stored_name
+    try:
+        delete_image(stored_name)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Kho ảnh chưa xác nhận xóa; dữ liệu vẫn được giữ để bạn thử lại.") from exc
     db.delete(scan)
     db.commit()
-    delete_image(stored_name)
     return MessageResponse(message="Đã xóa kết quả quét.")
 
 
 @router.delete("/scans", response_model=MessageResponse, tags=["scans"])
 def clear_scan_history(db: DbSession, user: CurrentUser) -> MessageResponse:
     stored_names = db.scalars(select(Scan.stored_name).where(Scan.user_id == user.id)).all()
+    try:
+        for stored_name in stored_names:
+            delete_image(stored_name)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Chưa xóa hết ảnh trên kho lưu trữ; lịch sử vẫn được giữ để thử lại.") from exc
     db.execute(delete(Scan).where(Scan.user_id == user.id))
     db.commit()
-    for stored_name in stored_names:
-        delete_image(stored_name)
     return MessageResponse(message="Đã xóa toàn bộ lịch sử quét.")
 
 

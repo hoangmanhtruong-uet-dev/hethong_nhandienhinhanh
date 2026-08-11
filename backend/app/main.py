@@ -1,20 +1,36 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import SQLAlchemyError
 
 from .api import router
 from .auth import router as auth_router
 from .config import get_settings
+from .resilience import rate_limit_retry_after
 
 
 settings = get_settings()
 frontend_dist = Path(__file__).resolve().parents[2] / "dist"
+logger = logging.getLogger("vision_ai")
+
+
+def error_response(request: Request, status_code: int, detail: object, code: str, headers: dict | None = None) -> JSONResponse:
+    request_id = getattr(request.state, "request_id", uuid4().hex)
+    return JSONResponse(
+        status_code=status_code,
+        content={"detail": detail, "code": code, "request_id": request_id},
+        headers={**(headers or {}), "X-Request-ID": request_id},
+    )
 
 
 @asynccontextmanager
@@ -41,9 +57,45 @@ app.include_router(router, prefix=settings.api_prefix)
 app.include_router(auth_router, prefix=settings.api_prefix)
 
 
+@app.exception_handler(HTTPException)
+async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
+    return error_response(request, exc.status_code, exc.detail, f"http_{exc.status_code}", dict(exc.headers or {}))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    return error_response(request, 422, exc.errors(), "validation_error")
+
+
+@app.exception_handler(SQLAlchemyError)
+async def database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+    logger.exception("Database failure request_id=%s", getattr(request.state, "request_id", "unknown"), exc_info=exc)
+    return error_response(request, 503, "Cơ sở dữ liệu tạm thời không phản hồi. Vui lòng thử lại.", "database_unavailable", {"Retry-After": "10"})
+
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled failure request_id=%s", getattr(request.state, "request_id", "unknown"), exc_info=exc)
+    return error_response(request, 500, "Máy chủ gặp lỗi ngoài dự kiến.", "internal_error")
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
-    response = await call_next(request)
+    request.state.request_id = uuid4().hex
+    retry_after = rate_limit_retry_after(request)
+    if retry_after is not None:
+        return error_response(
+            request, 429, "Hệ thống đang nhận quá nhiều yêu cầu. Vui lòng thử lại sau.",
+            "rate_limited", {"Retry-After": str(retry_after)},
+        )
+    try:
+        response = await asyncio.wait_for(call_next(request), timeout=settings.api_timeout_seconds)
+    except TimeoutError:
+        return error_response(
+            request, 504, "Máy chủ xử lý quá thời gian cho phép. Vui lòng thử lại.",
+            "request_timeout", {"Retry-After": "5"},
+        )
+    response.headers["X-Request-ID"] = request.state.request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"

@@ -34,6 +34,10 @@ class StoredImage:
     height: int
 
 
+class StorageDeletionError(RuntimeError):
+    pass
+
+
 def cloudinary_enabled() -> bool:
     return bool(get_settings().cloudinary_url)
 
@@ -156,7 +160,12 @@ def delete_image(stored_name: str) -> None:
     if cloud_reference:
         configure_cloudinary()
         public_id, _image_format = cloud_reference
-        cloudinary.uploader.destroy(public_id, resource_type="image", type="authenticated", invalidate=True)
+        result = cloudinary.uploader.destroy(
+            public_id, resource_type="image", type="authenticated", invalidate=True
+        )
+        outcome = str((result or {}).get("result", "")).casefold()
+        if outcome not in {"ok", "not found"}:
+            raise StorageDeletionError(f"Cloudinary không xác nhận xóa ảnh (result={outcome or 'unknown'}).")
         return
     (get_settings().upload_dir / Path(stored_name).name).unlink(missing_ok=True)
 

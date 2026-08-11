@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     gemini_model: str = Field(default="gemini-3.5-flash", pattern=r"^[A-Za-z0-9._-]+$")
     gemini_timeout_seconds: int = Field(default=35, ge=5, le=120)
     gemini_requests_per_hour: int = Field(default=20, ge=1, le=200)
+    api_timeout_seconds: int = Field(default=60, ge=10, le=180)
+    api_requests_per_minute: int = Field(default=300, ge=30, le=5000)
+    upload_requests_per_minute: int = Field(default=30, ge=5, le=500)
 
     model_config = SettingsConfigDict(
         env_file=BACKEND_DIR / ".env",

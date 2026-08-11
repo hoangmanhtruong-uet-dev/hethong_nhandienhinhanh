@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 from PIL import Image
+import pytest
 
 
 TEST_DIR = Path(tempfile.mkdtemp(prefix="vision-ai-tests-"))
@@ -22,8 +23,11 @@ from alembic.config import Config  # noqa: E402
 
 from app.main import app  # noqa: E402
 import app.api as api_module  # noqa: E402
+import app.storage as storage_module  # noqa: E402
 from app.gemini import _response_schema  # noqa: E402
+from app.resilience import reset_rate_limits  # noqa: E402
 from app.schemas import AdvancedAnalysisResponse  # noqa: E402
+from app.storage import StorageDeletionError, delete_image  # noqa: E402
 
 
 alembic_config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
@@ -346,6 +350,46 @@ def test_gemini_schema_only_uses_supported_string_constraints() -> None:
     assert "minLength" not in serialized
     assert "maxLength" not in serialized
     assert "default" not in serialized
+
+
+def test_cloudinary_delete_requires_provider_confirmation(monkeypatch) -> None:
+    monkeypatch.setattr(storage_module, "configure_cloudinary", lambda: None)
+    monkeypatch.setattr(storage_module.cloudinary.uploader, "destroy", lambda *args, **kwargs: {"result": "ok"})
+    delete_image("cld:vision-ai/user/image-id|jpg")
+    monkeypatch.setattr(storage_module.cloudinary.uploader, "destroy", lambda *args, **kwargs: {"result": "not found"})
+    delete_image("cld:vision-ai/user/image-id|jpg")
+    monkeypatch.setattr(storage_module.cloudinary.uploader, "destroy", lambda *args, **kwargs: {"result": "pending"})
+    with pytest.raises(StorageDeletionError):
+        delete_image("cld:vision-ai/user/image-id|jpg")
+
+
+def test_failed_storage_delete_keeps_scan_for_retry(monkeypatch) -> None:
+    with TestClient(app) as client:
+        register(client, "storage-retry@example.com")
+        scan = create_scan(client)
+        monkeypatch.setattr(api_module, "delete_image", lambda _stored_name: (_ for _ in ()).throw(StorageDeletionError("offline")))
+        failed = client.delete(f"/api/scans/{scan['id']}")
+        assert failed.status_code == 502
+        assert failed.json()["request_id"]
+        assert client.get(f"/api/scans/{scan['id']}").status_code == 200
+
+
+def test_request_ids_and_global_rate_limit(monkeypatch) -> None:
+    reset_rate_limits()
+    original = api_module.settings.api_requests_per_minute
+    monkeypatch.setattr(api_module.settings, "api_requests_per_minute", 1)
+    try:
+        with TestClient(app) as client:
+            first = client.get("/api/scans", headers={"x-forwarded-for": "resilience-test"})
+            assert first.status_code == 401
+            assert first.headers["x-request-id"] == first.json()["request_id"]
+            blocked = client.get("/api/scans", headers={"x-forwarded-for": "resilience-test"})
+            assert blocked.status_code == 429
+            assert blocked.json()["code"] == "rate_limited"
+            assert int(blocked.headers["retry-after"]) >= 1
+    finally:
+        monkeypatch.setattr(api_module.settings, "api_requests_per_minute", original)
+        reset_rate_limits()
 
 
 def test_account_email_password_and_deletion_lifecycle() -> None:

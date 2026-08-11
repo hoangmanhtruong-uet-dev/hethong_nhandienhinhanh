@@ -42,3 +42,9 @@ services:
         value: gemini-3.5-flash
       - key: VISION_AI_GEMINI_REQUESTS_PER_HOUR
         value: "20"
+      - key: VISION_AI_API_TIMEOUT_SECONDS
+        value: "60"
+      - key: VISION_AI_API_REQUESTS_PER_MINUTE
+        value: "300"
+      - key: VISION_AI_UPLOAD_REQUESTS_PER_MINUTE
+        value: "30"
