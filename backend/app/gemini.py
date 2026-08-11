@@ -111,7 +111,6 @@ async def analyze_with_gemini(image_bytes: bytes, mime_type: str) -> AdvancedAna
             ],
         }],
         "generationConfig": {
-            "temperature": 0.1,
             "maxOutputTokens": 1400,
             "responseFormat": {
                 "text": {
