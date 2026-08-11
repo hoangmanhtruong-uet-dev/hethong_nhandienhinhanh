@@ -7,6 +7,11 @@
     : `${location.origin}/api`;
   const API_BASE = (window.VISION_API_URL || defaultApiBase).replace(/\/$/, '');
   const API_ORIGIN = API_BASE.replace(/\/api$/, '');
+  const VERSION_TOKEN = '__VISION_APP_VERSION__';
+  const BUILD_TOKEN = '__VISION_BUILD_ID__';
+  const APP_VERSION = VERSION_TOKEN.startsWith('__') ? '1.1.0-dev' : VERSION_TOKEN;
+  const APP_BUILD = BUILD_TOKEN.startsWith('__') ? 'local' : BUILD_TOKEN;
+  const APP_VERSION_LABEL = `${APP_VERSION}+${APP_BUILD}`;
   const MAX_FILE_BYTES = 15 * 1024 * 1024;
   const MAX_PIXELS = 20 * 1024 * 1024;
   const PUBLIC_ROUTES = new Set(['onboarding', 'login', 'register', 'forgot-password', 'reset-password', 'verify-email', 'two-factor']);
@@ -242,7 +247,7 @@
   function onboardingPage() {
     return shell(`<main class="page no-chrome onboarding">
       <div class="onboarding-visual">${icon('frame_inspect')}</div>
-      <div class="onboarding-copy"><div class="eyebrow">Vision AI · v1.0</div><h1>Nhận diện thế giới bằng AI</h1><p class="lead">Quét hình ảnh, phân loại vật thể và tổ chức kết quả trong vài giây. Ảnh được ưu tiên xử lý ngay trên thiết bị.</p>
+      <div class="onboarding-copy"><div class="eyebrow">Vision AI · v${esc(APP_VERSION)}</div><h1>Nhận diện thế giới bằng AI</h1><p class="lead">Quét hình ảnh, phân loại vật thể và tổ chức kết quả trong vài giây. Ảnh được ưu tiên xử lý ngay trên thiết bị.</p>
       <button class="btn btn-primary btn-block" style="margin-top:24px" data-go="login">${icon('login')} Bắt đầu</button><p class="tiny muted" style="text-align:center;margin-top:13px">${icon('lock')} Bảo mật và riêng tư theo mặc định</p></div>
     </main>`, { chrome: false });
   }
@@ -482,7 +487,7 @@
   }
 
   function appUpdatePage() {
-    return shell(`<main class="page update-visual"><div class="state-page"><img src="/assets/icons/icon-192.png" alt=""><div class="eyebrow">App update available</div><h2>${state.pwa.updateReady ? 'Phiên bản mới đã sẵn sàng' : 'Vision AI đang mới nhất'}</h2><p>${state.pwa.updateReady ? 'Giao diện mới đã tải xong. Cập nhật sẽ khởi động lại ứng dụng.' : 'Service worker sẽ tự kiểm tra bản cập nhật khi bạn mở ứng dụng.'}</p><button class="btn btn-primary" data-action="apply-update" ${state.pwa.updateReady ? '' : 'disabled'}>${icon('system_update')} Cập nhật ngay</button></div></main>`, { title: 'Cập nhật ứng dụng', back: true });
+    return shell(`<main class="page update-visual"><div class="state-page"><img src="/assets/icons/icon-192.png" alt=""><div class="eyebrow">Vision AI · ${esc(APP_VERSION_LABEL)}</div><h2>${state.pwa.updateReady ? 'Phiên bản mới đã sẵn sàng' : 'Vision AI đang mới nhất'}</h2><p>${state.pwa.updateReady ? 'Giao diện mới đã tải xong. Cập nhật sẽ khởi động lại ứng dụng.' : 'Ứng dụng tự kiểm tra và kích hoạt bản mới mỗi khi bạn mở.'}</p><button class="btn btn-primary" data-action="apply-update" ${state.pwa.updateReady ? '' : 'disabled'}>${icon('system_update')} Cập nhật ngay</button></div></main>`, { title: 'Cập nhật ứng dụng', back: true });
   }
 
   function teamPage() {
@@ -504,7 +509,7 @@
       <button class="setting-row" data-go="models"><span class="setting-icon">${icon('model_training')}</span><span><strong>Mô hình AI</strong><small>${state.models.status === 'ready' ? 'MobileNet & COCO-SSD sẵn sàng' : 'Đang tải mô hình'}</small></span><span class="status-dot ${state.models.status === 'ready' ? 'ready' : ''}"></span></button>
       <button class="setting-row" data-go="sync"><span class="setting-icon">${icon('sync')}</span><span><strong>Ngoại tuyến & Đồng bộ</strong><small>${state.system.database} · ${state.system.storage}</small></span>${icon('chevron_right')}</button>
       <button class="setting-row" data-go="install"><span class="setting-icon">${icon('install_mobile')}</span><span><strong>Cài ứng dụng</strong><small>${state.pwa.installed ? 'Đã cài trên thiết bị' : 'Thêm Vision AI vào màn hình chính'}</small></span>${icon('chevron_right')}</button>
-      <button class="setting-row" data-go="about"><span class="setting-icon">${icon('info')}</span><span><strong>Thông tin ứng dụng</strong><small>Vision AI v1.0.0</small></span>${icon('chevron_right')}</button>
+      <button class="setting-row" data-go="about"><span class="setting-icon">${icon('info')}</span><span><strong>Thông tin ứng dụng</strong><small>Vision AI v${esc(APP_VERSION_LABEL)}</small></span>${icon('chevron_right')}</button>
       <button class="setting-row" data-go="offline"><span class="setting-icon">${icon('wifi')}</span><span><strong>Kiểm tra kết nối</strong><small>Backend FastAPI</small></span>${icon('chevron_right')}</button>
     </div><button class="btn btn-danger btn-block" style="margin-top:22px" data-go="delete-confirm">${icon('delete_forever')} Xóa toàn bộ lịch sử</button></main>`, { title: 'Cài đặt' });
   }
@@ -520,7 +525,7 @@
   }
 
   function aboutPage() {
-    return shell(`<main class="page"><div class="permission-hero"><div class="permission-orb">${icon('qr_code_scanner')}</div></div><div style="text-align:center"><h2>Vision AI Scanner</h2><p class="mono tiny muted">PHIÊN BẢN 1.0.0</p><span class="tag active">AI: MobileNet + COCO-SSD</span></div><div class="stack" style="margin-top:24px"><button class="setting-row"><span class="setting-icon">${icon('shield')}</span><span><strong>Tóm tắt quyền riêng tư</strong><small>Xử lý cục bộ theo mặc định</small></span>${icon('chevron_right')}</button><button class="setting-row"><span class="setting-icon">${icon('gavel')}</span><span><strong>Giấy phép</strong><small>Thư viện mã nguồn mở</small></span>${icon('chevron_right')}</button><button class="setting-row"><span class="setting-icon">${icon('description')}</span><span><strong>Điều khoản dịch vụ</strong><small>Cập nhật tháng 08/2026</small></span>${icon('chevron_right')}</button></div><button class="btn btn-primary btn-block" style="margin-top:22px" data-action="feedback">${icon('rate_review')} Gửi phản hồi</button></main>`, { title: 'Thông tin ứng dụng', back: true });
+    return shell(`<main class="page"><div class="permission-hero"><div class="permission-orb">${icon('qr_code_scanner')}</div></div><div style="text-align:center"><h2>Vision AI Scanner</h2><p class="mono tiny muted">PHIÊN BẢN ${esc(APP_VERSION_LABEL)}</p><span class="tag active">AI: MobileNet + COCO-SSD + Gemini</span></div><div class="stack" style="margin-top:24px"><button class="setting-row"><span class="setting-icon">${icon('shield')}</span><span><strong>Tóm tắt quyền riêng tư</strong><small>Xử lý cục bộ theo mặc định</small></span>${icon('chevron_right')}</button><button class="setting-row"><span class="setting-icon">${icon('gavel')}</span><span><strong>Giấy phép</strong><small>Thư viện mã nguồn mở</small></span>${icon('chevron_right')}</button><button class="setting-row"><span class="setting-icon">${icon('description')}</span><span><strong>Điều khoản dịch vụ</strong><small>Cập nhật tháng 08/2026</small></span>${icon('chevron_right')}</button></div><button class="btn btn-primary btn-block" style="margin-top:22px" data-action="feedback">${icon('rate_review')} Gửi phản hồi</button></main>`, { title: 'Thông tin ứng dụng', back: true });
   }
 
   function statePage(type) {
@@ -1537,12 +1542,14 @@
       const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
       state.pwa.registration = registration;
       state.pwa.updateReady = Boolean(registration.waiting);
+      if (registration.waiting) registration.waiting.postMessage({ type: 'SKIP_WAITING' });
       registration.addEventListener('updatefound', () => {
         const worker = registration.installing;
         worker?.addEventListener('statechange', () => {
           if (worker.state === 'installed' && navigator.serviceWorker.controller) {
             state.pwa.updateReady = true;
             toast('Có phiên bản Vision AI mới.', 'success');
+            worker.postMessage({ type: 'SKIP_WAITING' });
             if (state.route === 'app-update') render();
           }
         });
@@ -1552,6 +1559,7 @@
         window.__visionReloading = true;
         location.reload();
       });
+      await registration.update();
     } catch (error) {
       console.warn('Service worker registration failed:', error);
     }

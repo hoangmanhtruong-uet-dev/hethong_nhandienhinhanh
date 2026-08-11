@@ -49,12 +49,18 @@ const health = await waitForRelease();
 const page = await request('/');
 const html = await page.text();
 if (!html.includes('Vision AI')) throw new Error('Production HTML does not contain the Vision AI app.');
+if (expectedCommit && !html.includes(`script.js?v=${expectedCommit}`)) {
+  throw new Error(`Production HTML is not pinned to release ${expectedCommit}.`);
+}
 
 const manifest = await (await request('/manifest.webmanifest')).json();
 if (!manifest.name || !manifest.start_url) throw new Error('PWA manifest is incomplete.');
 
 const serviceWorker = await (await request('/sw.js')).text();
 if (!serviceWorker.includes('vision-ai-')) throw new Error('Service worker cache configuration is missing.');
+if (expectedCommit && !serviceWorker.includes(`BUILD_ID = '${expectedCommit}'`)) {
+  throw new Error(`Service worker cache does not match release ${expectedCommit}.`);
+}
 
 await request('/api/scans', 401);
 await request('/api/auth/me', 401);

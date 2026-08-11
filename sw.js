@@ -1,11 +1,12 @@
-const VERSION = 'vision-ai-v13';
+const BUILD_ID = '__VISION_BUILD_ID__';
+const VERSION = `vision-ai-${BUILD_ID}`;
 const SHELL_CACHE = `${VERSION}-shell`;
 const STATIC_CACHE = `${VERSION}-static`;
 const APP_SHELL = [
   '/',
-  '/style.css',
-  '/script.js?v=13',
-  '/yolo-runtime.js?v=2',
+  '/style.css?v=__VISION_BUILD_ID__',
+  '/script.js?v=__VISION_BUILD_ID__',
+  '/yolo-runtime.js?v=__VISION_BUILD_ID__',
   '/manifest.webmanifest',
   '/assets/icons/icon-192.png',
   '/assets/icons/icon-512.png',
@@ -13,7 +14,7 @@ const APP_SHELL = [
 ];
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(SHELL_CACHE).then(cache => cache.addAll(APP_SHELL)));
+  event.waitUntil(caches.open(SHELL_CACHE).then(cache => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', event => {
@@ -44,6 +45,18 @@ self.addEventListener('fetch', event => {
       caches.open(SHELL_CACHE).then(cache => cache.put('/', copy));
       return response;
     }).catch(() => caches.match('/')));
+    return;
+  }
+
+  const coreAsset = url.origin === self.location.origin && (
+    ['script', 'style', 'worker'].includes(request.destination) ||
+    url.pathname === '/manifest.webmanifest'
+  );
+  if (coreAsset) {
+    event.respondWith(fetch(request).then(response => {
+      if (response.ok) caches.open(STATIC_CACHE).then(cache => cache.put(request, response.clone()));
+      return response;
+    }).catch(() => caches.match(request)));
     return;
   }
 
