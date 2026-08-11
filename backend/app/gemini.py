@@ -124,7 +124,7 @@ async def analyze_with_gemini(image_bytes: bytes, mime_type: str) -> AdvancedAna
             "maxOutputTokens": 1400,
             "responseFormat": {
                 "text": {
-                    "mimeType": "application/json",
+                    "mimeType": "APPLICATION_JSON",
                     "schema": _response_schema(),
                 },
             },
